@@ -2,13 +2,84 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Each user can only read/write their own data.
-    // All subcollections under users/{userId}/ inherit this rule.
-    match /users/{userId}/{document=**} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+    // ------------------------------------------------------------------------
+    // Ownership: each user can only read/write their own subtree.
+    // ------------------------------------------------------------------------
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
     }
 
-    // Deny everything else.
+    // The shape Date.prototype.toISOString() produces: UTC, fixed width. Every
+    // timestamp Glim writes has this shape, so string comparison on two such
+    // values is correct chronological ordering.
+    function isIsoStamp(v) {
+      return v is string
+          && v.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?Z$');
+    }
+
+    // The edit-in-place collections whose rows carry updatedAt and reconcile by
+    // last-write-wins. Everything else under a user is either a write-once
+    // entry log or a singleton that reconciles by read-and-compare.
+    function isMutable(collectionId) {
+      return collectionId in [
+        'nutrition-library', 'symptoms', 'symptoms-library',
+        'symptom-categories', 'symptom-days'
+      ];
+    }
+
+    // ------------------------------------------------------------------------
+    // updatedAt monotonicity: a write may never move a document's updatedAt
+    // backwards.
+    //
+    // This is the server-side backstop for the client's last-write-wins merge.
+    // The client pulls before it pushes, but a client is not something the
+    // server can trust: an older installed PWA on a rarely-opened device, or a
+    // future client bug, could still blind-push a stale row over a newer one,
+    // updatedAt included, after which nothing can recover it. This rule makes
+    // that write fail at the server regardless of which client sent it.
+    //
+    // ">=" rather than ">": an idempotent re-push of an unchanged row carries
+    // an equal updatedAt and must succeed. Creates (resource == null), rows
+    // with no updatedAt on either side, and rows whose EXISTING stamp is not a
+    // well-formed ISO string are allowed through: the first two so the rule
+    // cannot brick a collection that predates the field, the last so a client
+    // holding a good copy can repair a corrupt one (a lexicographic compare of
+    // '2026-...' against garbage would otherwise deny the repair forever).
+    // ------------------------------------------------------------------------
+    function updatedAtNotRegressing() {
+      return resource == null
+          || !('updatedAt' in resource.data)
+          || !isIsoStamp(resource.data.updatedAt)
+          || !('updatedAt' in request.resource.data)
+          || request.resource.data.updatedAt >= resource.data.updatedAt;
+    }
+
+    // The user document itself (users/{uid}), written once by
+    // ensureUserDocument in App.jsx.
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+    }
+
+    // Every Glim data document lives exactly one collection below the user
+    // document. EXACTLY ONE GRANTING rule matches each such path (the global
+    // catch-all below also matches, and grants nothing). There is deliberately
+    // no recursive {document=**} under /users: Firestore grants a request if
+    // ANY matching allow statement is true, so a recursive ownership-only rule
+    // alongside the specific one would silently grant every write the
+    // monotonicity check denies, and the backstop would enforce nothing. (That
+    // is how the first draft of this file was written. A static test now
+    // asserts the recursive form is absent.)
+    match /users/{userId}/{collectionId}/{docId} {
+      allow read: if isOwner(userId);
+      allow create, update: if isOwner(userId)
+          && (!isMutable(collectionId) || updatedAtNotRegressing());
+      // Deletes are not gated on updatedAt: request.resource is null on a
+      // delete, so the check cannot be evaluated, and the reset-all-data path
+      // hard-deletes by design.
+      allow delete: if isOwner(userId);
+    }
+
+    // Deny everything else, including any path deeper than the above.
     match /{document=**} {
       allow read, write: if false;
     }

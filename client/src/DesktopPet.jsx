@@ -3,7 +3,7 @@
 // Project:     Glim
 // Author:      Reina Hastings (reinahastings13@gmail.com)
 // Created:     2026-03-25
-// Last Modified: 2026-03-30
+// Last Modified: 2026-09-06
 // Purpose:     Main Glim application component. Owns all interaction logic,
 //              timer-based behaviors, and state coordination across stores.
 //              Sub-components (Background, OwlMoth, panels, etc.) are in
@@ -16,7 +16,8 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import {
   MESSAGES, MOVE_REMINDERS, MOVE_WAKE_REMINDERS, EYES_REMINDERS,
   EYES_WAKE_REMINDERS, MOVE_DONE_RESPONSES, EYES_DONE_RESPONSES,
-  MINDFULNESS, DISCOVERIES, JOURNAL_PROMPTS, JOURNAL_NUDGES, SCIENCE_FACTS
+  MINDFULNESS, DISCOVERIES, JOURNAL_PROMPTS, JOURNAL_NUDGES, SCIENCE_FACTS,
+  SYMPTOM_ACKNOWLEDGEMENTS, SYMPTOM_EPISODE_ENDED, SYMPTOM_CLEAR_DAY
 } from './messages.js';
 import './storage.js';
 import './glim-animations.css';
@@ -25,6 +26,8 @@ import {
   useCreatureStore, useMessageStore, useSettingsStore,
   useUIStore, useJournalStore, usePokesStore, useWaterStore, useStepsStore,
   useNutritionStore, useNutritionLibraryStore,
+  useSymptomsStore, useSymptomsLibraryStore,
+  useSymptomsCategoriesStore, useSymptomClearDaysStore,
 } from './stores';
 import Background from './components/Background';
 import AmbientBugs from './components/AmbientBugs';
@@ -36,6 +39,8 @@ import JournalPanel from './components/JournalPanel';
 import NavBar from './components/NavBar';
 import CompanionPanel from './components/CompanionPanel';
 import MoreMenu from './components/MoreMenu';
+import SymptomDayPrompt from './components/SymptomDayPrompt';
+import { todayStr } from './utils/dateUtils';
 
 
 export default function DesktopPet() {
@@ -59,13 +64,18 @@ export default function DesktopPet() {
   } = useMessageStore();
 
   const { wellnessInterval, moveInterval, eyesInterval,
+    symptomReminderEnabled, symptomReminderHour,
     reload: reloadSettings,
   } = useSettingsStore();
 
-  const { journalPrompt, setJournalText, setJournalPrompt, activePanel } = useUIStore();
+  const {
+    journalPrompt, setJournalText, setJournalPrompt, activePanel,
+    pendingReaction, setPendingReaction,
+  } = useUIStore();
 
   // ---- Responsive layout ----
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 600);
+  const [showDayPrompt, setShowDayPrompt] = useState(false);
   useEffect(() => {
     const handler = () => setIsMobile(window.innerWidth < 600);
     window.addEventListener('resize', handler);
@@ -80,6 +90,10 @@ export default function DesktopPet() {
   const { reload: reloadSteps } = useStepsStore();
   const { reload: reloadNutrition } = useNutritionStore();
   const { reload: reloadNutritionLibrary } = useNutritionLibraryStore();
+  const { reload: reloadSymptoms }         = useSymptomsStore();
+  const { reload: reloadSymptomsLibrary }  = useSymptomsLibraryStore();
+  const { reload: reloadSymptomsCategories } = useSymptomsCategoriesStore();
+  const { reload: reloadSymptomClearDays }   = useSymptomClearDaysStore();
 
   // ---- Drag refs ----
   const dragStartRef = useRef(null);
@@ -98,6 +112,12 @@ export default function DesktopPet() {
   const eyesTimer = useRef(null);
   const lastWellnessRef = useRef("");
   const lastEncouragementRef = useRef("");
+  // Symptom reaction bookkeeping: the shared 30-minute rate-limit stamp, plus one
+  // last-message ref per pool so pickUnique never repeats itself back to back.
+  const lastSymptomReactionAtRef = useRef(0);
+  const lastSymptomAckRef        = useRef("");
+  const lastEpisodeEndedRef      = useRef("");
+  const lastClearDayRef          = useRef("");
   const clickTimesRef = useRef([]);
   const lastInteractionRef = useRef(Date.now());
   const holdTimerRef = useRef(null);
@@ -138,10 +158,14 @@ export default function DesktopPet() {
       if (e.detail?.domains?.includes('steps'))             reloadSteps();
       if (e.detail?.domains?.includes('nutrition'))         reloadNutrition();
       if (e.detail?.domains?.includes('nutrition-library')) reloadNutritionLibrary();
+      if (e.detail?.domains?.includes('symptoms'))          reloadSymptoms();
+      if (e.detail?.domains?.includes('symptoms-library'))  reloadSymptomsLibrary();
+      if (e.detail?.domains?.includes('symptom-categories')) reloadSymptomsCategories();
+      if (e.detail?.domains?.includes('symptom-days'))       reloadSymptomClearDays();
     };
     window.addEventListener('glim-data-updated', handler);
     return () => window.removeEventListener('glim-data-updated', handler);
-  }, [reloadJournal, reloadPokes, reloadSettings, reloadWater, reloadSteps, reloadNutrition, reloadNutritionLibrary]);
+  }, [reloadJournal, reloadPokes, reloadSettings, reloadWater, reloadSteps, reloadNutrition, reloadNutritionLibrary, reloadSymptoms, reloadSymptomsLibrary, reloadSymptomsCategories, reloadSymptomClearDays]);
 
   // ---- Eye tracking ----
   // Uses isSleepingRef so the callback is stable (no dep on specialAnim).
@@ -382,6 +406,91 @@ export default function DesktopPet() {
     while (p === lastRef.current && a < 5) { p = pickRandom(pool); a++; }
     lastRef.current = p; return p;
   }, []);
+
+  // ---- Symptom diary reactions ----
+  //
+  // SymptomsPanel receives no props and cannot reach showMessage. It therefore
+  // SIGNALS through useUIStore.pendingReaction (the same precedent as
+  // requestClose, NavBar -> CompanionPanel) and this effect decides whether Glim
+  // actually speaks. Deliberately not refactored so the panel could call
+  // showMessage, and deliberately not calling useMessageStore from the panel:
+  // bubble timing and the wellness/msgType bookkeeping live here, and a direct
+  // store write would bypass all of it.
+  //
+  // RATE LIMIT: one reaction per 30 minutes, across all three pools sharing a
+  // single stamp. Someone logging six symptoms through a flare must not get six
+  // speech bubbles - that is precisely the moment the app should be quiet - and a
+  // burst of episode closures at the end of that flare is the same situation.
+  // The signal is cleared either way, so a suppressed reaction is dropped, never
+  // queued to fire later out of context.
+  useEffect(() => {
+    if (!pendingReaction) return;
+
+    const REACTION_COOLDOWN_MS = 30 * 60 * 1000;
+    const now = Date.now();
+
+    if (now - lastSymptomReactionAtRef.current >= REACTION_COOLDOWN_MS) {
+      lastSymptomReactionAtRef.current = now;
+      if (pendingReaction === 'symptom-logged') {
+        showMessage(pickUnique(SYMPTOM_ACKNOWLEDGEMENTS, lastSymptomAckRef), false, 'symptom');
+      } else if (pendingReaction === 'episode-ended') {
+        showMessage(pickUnique(SYMPTOM_EPISODE_ENDED, lastEpisodeEndedRef), false, 'symptom');
+      } else if (pendingReaction === 'clear-day') {
+        showMessage(pickUnique(SYMPTOM_CLEAR_DAY, lastClearDayRef), false, 'symptom');
+      }
+    }
+
+    setPendingReaction(null);
+  }, [pendingReaction, setPendingReaction, showMessage, pickUnique]);
+
+  // ---- End-of-day symptom reminder (opt-in, in-app only) ----
+  //
+  // NOT Web Push and NOT the Notification API. Push needs a service worker
+  // handler, a permission gesture, and on iOS a Home-Screen-installed PWA on
+  // 16.4+; that is a separate project. This degrades correctly and needs no data
+  // model change if push is added later.
+  //
+  // Fires on app open and on tab foreground, at most ONCE PER LOGICAL DAY (the
+  // stamp is per-device and deliberately unsynced: whether this device already
+  // asked today is not a fact about the user's health record). Shows only when
+  // the day genuinely has no record either way - no entries AND no clear-day row.
+  useEffect(() => {
+    if (!symptomReminderEnabled) return;
+
+    const STAMP_KEY = 'glim-symptom-reminder-prompted';
+
+    const evaluate = () => {
+      const today = todayStr();
+      try {
+        if (localStorage.getItem(STAMP_KEY) === today) return;
+      } catch { /* ignore */ }
+      if (new Date().getHours() < symptomReminderHour) return;
+      if (useSymptomsStore.getState().getTodayEntries().length > 0) return;
+      if (useSymptomClearDaysStore.getState().isClear(today)) return;
+      setShowDayPrompt(true);
+    };
+
+    evaluate();
+    const onVisible = () => { if (!document.hidden) evaluate(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [symptomReminderEnabled, symptomReminderHour]);
+
+  // Both answers stamp the day, so the prompt cannot reappear on the next tab
+  // foreground. "yes" writes the W6 clear-day record and lets Glim acknowledge it
+  // through the same rate-limited path a manual clear day uses.
+  const stampDayPrompt = useCallback(() => {
+    try { localStorage.setItem('glim-symptom-reminder-prompted', todayStr()); }
+    catch { /* ignore */ }
+    setShowDayPrompt(false);
+  }, []);
+
+  const confirmClearDay = useCallback(() => {
+    const openEpisodes = useSymptomsStore.getState().getOpenEpisodes();
+    const result = useSymptomClearDaysStore.getState().markClear(todayStr(), openEpisodes);
+    if (result.ok) setPendingReaction('clear-day');
+    stampDayPrompt();
+  }, [setPendingReaction, stampDayPrompt]);
 
   // ---- Journal save ----
   const saveJournalEntry = useCallback((text) => {
@@ -814,6 +923,10 @@ export default function DesktopPet() {
 
       {/* More menu - feature grid overlay, slides up above the nav bar */}
       <MoreMenu />
+
+      {showDayPrompt && (
+        <SymptomDayPrompt onConfirm={confirmClearDay} onDismiss={stampDayPrompt} />
+      )}
 
       <SettingsView />
       <JournalPanel onSave={saveJournalEntry} />

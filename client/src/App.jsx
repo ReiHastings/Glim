@@ -3,7 +3,7 @@
 // Project:     Glim
 // Author:      Reina Hastings (reinahastings13@gmail.com)
 // Created:     2026-03-25
-// Last Modified: 2026-07-17
+// Last Modified: 2026-09-06
 // Purpose:     Root application component. Gates the app behind Firebase Auth.
 //              Listens for auth state changes and routes to SignIn or DesktopPet.
 //              Renders as soon as auth resolves; the Firestore user-document
@@ -23,13 +23,7 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import { startSync, stopSync } from './sync';
-import { useJournalStore } from './stores/useJournalStore';
-import { usePokesStore } from './stores/usePokesStore';
-import { useSettingsStore } from './stores/useSettingsStore';
-import { useWaterStore } from './stores/useWaterStore';
-import { useStepsStore } from './stores/useStepsStore';
-import { useNutritionStore } from './stores/useNutritionStore';
-import { useNutritionLibraryStore } from './stores/useNutritionLibraryStore';
+import { reloadAllStores } from './stores';
 import DesktopPet from './DesktopPet.jsx';
 import SignIn from './SignIn.jsx';
 import SplashScreen from './SplashScreen.jsx';
@@ -103,13 +97,12 @@ export default function App() {
             const k = localStorage.key(i);
             if (k && k.startsWith('glim-') && k !== 'glim-uid') localStorage.removeItem(k);
           }
-          useJournalStore.getState().reload();
-          usePokesStore.getState().reload();
-          useSettingsStore.getState().reload();
-          useWaterStore.getState().reload();
-          useStepsStore.getState().reload();
-          useNutritionStore.getState().reload();
-          useNutritionLibraryStore.getState().reload();
+          // Re-hydrate through the store barrel, never a hardcoded list here: a
+          // per-store list has twice silently missed a new domain (a53da46 for
+          // nutrition, and both symptom stores before Phase 1.5), leaving the
+          // previous user's rows in Zustand memory to be re-persisted and pushed
+          // under the new uid.
+          reloadAllStores();
         }
         localStorage.setItem('glim-uid', currentUser.uid);
 

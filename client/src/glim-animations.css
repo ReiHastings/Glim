@@ -212,3 +212,18 @@
   65% { left: 20%; top: 40%; }
   85% { left: 15%; top: 50%; }
 }
+
+/* ===== Symptom diary ===== */
+/* Ongoing-episode dot. Opacity only, slow and calm: this marks an open episode
+   WITHOUT ever showing elapsed time, per the symptom-diary governing constraint.
+   Static at full opacity when the user has asked for reduced motion. */
+@keyframes symptomOngoingPulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+.glim-ongoing-dot {
+  animation: symptomOngoingPulse 2.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .glim-ongoing-dot { animation: none; opacity: 1; }
+}

@@ -17,7 +17,8 @@
 //   - Exports: MESSAGES, MOVE_REMINDERS, MOVE_WAKE_REMINDERS, EYES_REMINDERS,
 //              EYES_WAKE_REMINDERS, MOVE_DONE_RESPONSES, EYES_DONE_RESPONSES,
 //              MINDFULNESS, DISCOVERIES, JOURNAL_PROMPTS, JOURNAL_NUDGES,
-//              SCIENCE_FACTS
+//              SCIENCE_FACTS, SYMPTOM_ACKNOWLEDGEMENTS, SYMPTOM_EPISODE_ENDED,
+//              SYMPTOM_CLEAR_DAY
 
 export const MESSAGES = {
   earlyMorning: [
@@ -753,4 +754,96 @@ export const SCIENCE_FACTS = [
   "science fact: journaling about stressful events can reduce intrusive thoughts and improve working memory. writing gets the thoughts OUT of the loop they're stuck in.",
   "nerd fact: your gut produces about 95% of your body's serotonin. what you eat directly affects your mood. your gut and brain are in constant conversation.",
   "did you know: hugging someone for 20+ seconds triggers oxytocin release. that's the bonding hormone. go hug someone for at least 20 seconds. science says so.",
+];
+
+
+// --- Symptom diary reactions -------------------------------------------------
+//
+// The first tracker events that make Glim speak (water, steps and nutrition
+// deliberately trigger nothing), so these set the pattern. Neutral and
+// supportive, never congratulatory: rated for REWARD SYMMETRY, meaning
+// SYMPTOM_CLEAR_DAY is no warmer or more enthusiastic than
+// SYMPTOM_ACKNOWLEDGEMENTS. If Glim were visibly happier on a no-symptom day, the
+// interface would be paying the user to under-report on bad days, corrupting
+// their own medical record in the worst possible direction.
+//
+// Selected with pickUnique, never pickRandom: an immediate repeat is grating here
+// in a way it is not elsewhere. Rate-limited to one reaction per 30 minutes in
+// DesktopPet, so a flare logged symptom-by-symptom stays quiet.
+
+export const SYMPTOM_ACKNOWLEDGEMENTS = [
+  "i'm here. no notes, just here.",
+  "ok. i'm nearby.",
+  "logged. that's all you have to do with it.",
+  "got it. nothing else required.",
+  "filed away. i'm just going to sit here.",
+  "ok. no follow up questions.",
+  "here. that's the whole update.",
+  "noted and nothing more.",
+  "alright. i'm around.",
+  "staying put.",
+  "i'm not going anywhere.",
+  "same spot as always.",
+  "i'll be over here, being small.",
+  "keeping you company. that's the entire job.",
+  "i'm going to sit here and be slightly warm at you.",
+  "consider me stationed.",
+  "taking up my post. the post is next to you.",
+  "logged. i will now do my best impression of a nearby lamp.",
+  "got it. resuming my primary function, which is hovering.",
+  "filed. going back to watching that bug i can never catch.",
+  "ok. i'm going to be quietly excellent at sitting.",
+  "noted. my qualifications are: none. my availability: total.",
+  "ok. i'm going to stare into the middle distance in solidarity.",
+  "whatever you do with today is allowed.",
+  "you're not required to be productive about this.",
+  "no version of today is the wrong one.",
+  "the day can just be a day.",
+  "noted. i've got it.",
+  "*antenna dip* got it.",
+  "okay. i wrote it down.",
+  "logged. you don't have to explain it.",
+  "recorded. that's all you have to do.",
+  "*wing settle* noted.",
+  "in the record. nothing else needed.",
+  "i've got it. you can set it down now.",
+  "*slow blink* okay.",
+  "written down. no explaining required.",
+  "that's saved. i'm here.",
+];
+
+export const SYMPTOM_EPISODE_ENDED = [
+  "that one's over. marking it closed.",
+  "okay. it stopped. that's in the record now.",
+  "*quiet wing settle* done.",
+  "closed it out.",
+  "that was a long one. it's logged as done.",
+  "over now. noted.",
+  "marking the end of it.",
+  "done. i wrote down when it stopped.",
+  "*antenna lowers* that one's finished.",
+  "it ended. that's in there.",
+  "closing it. nothing else needed.",
+  "stopped. recorded.",
+  "that one ran a while. it's closed now.",
+  "*settles* ended.",
+  "logged the end of it. i'm around.",
+];
+
+export const SYMPTOM_CLEAR_DAY = [
+  "clear day. noting it.",
+  "nothing to log. that's in there too.",
+  "a quiet one. recorded.",
+  "noted as clear.",
+  "okay. nothing to write down but the day itself.",
+  "*antenna still* clear. logged.",
+  "putting that in the record.",
+  "clear one. noted.",
+  "nothing today. saved.",
+  "recorded. quiet day.",
+  "in the log as clear.",
+  "okay. noted and done.",
+  "a plain day. it's in there.",
+  "*small wing fold* clear.",
+  "logged the quiet.",
 ];

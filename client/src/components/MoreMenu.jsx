@@ -30,6 +30,20 @@ function NutritionMenuIcon() {
   );
 }
 
+// Diary page with a soft wave: an observation record, deliberately not a
+// medical-cross or heartbeat glyph.
+function SymptomsMenuIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width={20} height={20} fill="none"
+      stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+      style={{ display: 'block' }}>
+      <rect x="4" y="3" width="16" height="18" rx="2.5" />
+      <path d="M8 9h8" />
+      <path d="M8 14c1.2 0 1.2-2 2.4-2s1.2 2 2.4 2 1.2-2 2.4-2" />
+    </svg>
+  );
+}
+
 function FocusMenuIcon() {
   return (
     <svg viewBox="0 0 24 24" width={20} height={20} fill="none"
@@ -328,6 +342,14 @@ export default function MoreMenu() {
             label="nutrition"
             available={nutritionAvailable}
             onTap={() => openFeature('nutrition')}
+          />
+          {/* Symptoms is not in the nav bar on any breakpoint: the diary is
+              sought out, never surfaced. The More menu is its only entry point. */}
+          <MenuItem
+            Icon={SymptomsMenuIcon}
+            label="symptoms"
+            available={true}
+            onTap={() => openFeature('symptoms')}
           />
           <MenuItem Icon={FocusMenuIcon}    label="focus"    available={false} />
           <MenuItem Icon={ExerciseMenuIcon} label="exercise" available={false} />

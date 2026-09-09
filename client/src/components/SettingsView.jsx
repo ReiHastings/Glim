@@ -19,6 +19,7 @@ import { useState, useEffect } from 'react';
 import { signOut } from 'firebase/auth';
 import { deleteDoc, getDocs, collection, doc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
+import { syncAll } from '../sync';
 import { useUIStore } from '../stores/useUIStore';
 import { useSettingsStore } from '../stores/useSettingsStore';
 import { useWaterStore } from '../stores/useWaterStore';
@@ -30,7 +31,21 @@ import WaterSettings, { waterSummary, waterIcon } from './settings/WaterSettings
 import StepsSettings, { stepsSummary, stepsIcon } from './settings/StepsSettings';
 import NutritionSettings, { nutritionSummary, nutritionIcon } from './settings/NutritionSettings';
 
-// All known localStorage keys owned by Glim
+// localStorage keys cleared by "reset all data".
+//
+// KNOWN DEFECT (logged 2026-07-16 as two BACKLOG items in glim_handoff.Rmd,
+// amended 2026-09-06 for the symptom domains; also in the Decision Register
+// entry of 2026-09-06): this list and deleteFirestoreData below are INCOMPLETE.
+// The four symptom keys/collections (glim-symptoms, glim-symptoms-library,
+// glim-symptoms-categories, glim-symptom-days) are absent from both, and
+// deleteFirestoreData clears only journal and water plus three singletons. So
+// "reset all data" leaves symptom health records in localStorage AND in
+// Firestore, and the domains it clears locally but not remotely (steps,
+// nutrition, nutrition library) are re-pulled on the next sync. Not fixed here
+// because the correct scope of reset - and whether it must refuse to run
+// offline, since a local-only clear is undone by the next pull - is a product
+// decision, not a code one. The UID-change guard in App.jsx uses a prefix scan
+// for exactly this reason and is not affected.
 const LOCAL_KEYS = [
   'glim-water', 'glim-steps', 'glim-journal', 'glim-pokes',
   'glim-settings', 'glim-sync-meta', 'glim-uid', 'glim-nutrition',
@@ -155,6 +170,20 @@ export default function SettingsView() {
     const uid = auth.currentUser?.uid;
     if (uid) await deleteFirestoreData(uid).catch(() => {});
     window.location.reload();
+  };
+
+  // Run a FULL sync while still authenticated, so anything written since the
+  // last one reaches Firestore before the session (and, on an account switch,
+  // its localStorage) ends. This is syncAll rather than flushSync on purpose:
+  // this call is awaited, so it can afford the read that makes pushing the
+  // mutable domains (symptoms, libraries, categories, clear days) safe, whereas
+  // the fire-and-forget tab-hide flush cannot and so skips them. Best-effort:
+  // sign-out must proceed even if the sync fails (e.g. offline). The
+  // reset-all-data path deliberately does NOT sync - it is a delete, so pushing
+  // first would be counterproductive.
+  const handleSignOut = async () => {
+    try { await syncAll(); } catch { /* ignore */ }
+    await signOut(auth);
   };
 
   const cancelConfirm = () => {
@@ -298,7 +327,7 @@ export default function SettingsView() {
         {/* Sign out */}
         <div style={{ marginTop: 16, padding: '0 4px' }}>
           <button
-            onClick={() => signOut(auth)}
+            onClick={handleSignOut}
             style={{
               width: '100%', padding: 12,
               background: 'rgba(239,68,68,0.1)',

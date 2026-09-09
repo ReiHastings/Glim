@@ -3,7 +3,7 @@
 // Project:     Glim
 // Author:      Reina Hastings (reinahastings13@gmail.com)
 // Created:     2026-03-27
-// Last Modified: 2026-03-27
+// Last Modified: 2026-09-06
 // Purpose:     Zustand store for panel visibility and transient UI state.
 //              Includes journal panel view state (journalView, journalText,
 //              journalPrompt). Holds nav active state and companion panel
@@ -24,6 +24,15 @@ export const useUIStore = create((set) => ({
   activePanel:  null,     // null | 'water' | 'steps' | 'nutrition' | 'tasks' | 'focus'
   navBarHeight: 80,       // measured via ResizeObserver in NavBar.jsx
   requestClose: false,    // signal from NavBar to CompanionPanel to animate closed
+
+  // Signal from SymptomsPanel to DesktopPet, same precedent as requestClose
+  // above. The panel receives no props and must not call showMessage or
+  // useMessageStore itself: bubble timing (and the wellness/msgType bookkeeping)
+  // lives in DesktopPet, and calling the message store directly would bypass it.
+  // So the panel names the EVENT and DesktopPet decides whether Glim speaks -
+  // which is also where the once-per-30-minutes rate limit belongs.
+  // null | 'symptom-logged' | 'episode-ended' | 'clear-day'
+  pendingReaction: null,
   showMoreMenu: false,    // controls the "more" feature grid overlay
   focusView: null,        // null | 'settings' | 'library' (focus mode screen routing)
 
@@ -40,6 +49,7 @@ export const useUIStore = create((set) => ({
   setActivePanel:  (v) => set({ activePanel: v }),
   setNavBarHeight: (h) => set({ navBarHeight: h }),
   setRequestClose: (v) => set({ requestClose: v }),
+  setPendingReaction: (v) => set({ pendingReaction: v }),
   setJournalView:  (v) => set({ journalView: v }),
   setJournalText:  (v) => set({ journalText: v }),
   setJournalPrompt:(v) => set({ journalPrompt: v }),

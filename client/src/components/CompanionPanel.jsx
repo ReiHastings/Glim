@@ -20,6 +20,19 @@ import { useUIStore } from '../stores/useUIStore';
 import WaterPanel from './WaterPanel';
 import StepsPanel from './StepsPanel';
 import NutritionPanel from './NutritionPanel';
+import SymptomsPanel from './SymptomsPanel';
+
+// ===== Per-panel layout overrides =====
+// Default panel height is 42vh. Symptoms is an approved deviation at ~62%: it
+// carries a chip grid AND today's entry list, and compressing the creature zone
+// to ~34% was signed off with the mockup.
+const PANEL_HEIGHTS = {
+  symptoms: '62vh',
+};
+
+// Panels that manage their own internal scroll split (fixed header area + one
+// scrolling region) opt out of the outer scroll container.
+const SELF_SCROLLING_PANELS = ['nutrition', 'symptoms'];
 
 // ===== Placeholder content per panel type =====
 
@@ -141,7 +154,7 @@ export default function CompanionPanel() {
         left: 0,
         right: 0,
         bottom: panelBottom,
-        height: '42vh',
+        height: PANEL_HEIGHTS[activePanel] ?? '42vh',
         zIndex: 40,
         display: 'flex',
         flexDirection: 'column',
@@ -176,15 +189,16 @@ export default function CompanionPanel() {
           }} />
         </div>
 
-        {/* Scrollable content. Nutrition panel manages its own scroll split internally. */}
+        {/* Scrollable content. Nutrition and symptoms manage their own scroll split. */}
         <div style={{
           flex:      1,
-          overflowY: activePanel === 'nutrition' ? 'hidden' : 'auto',
+          overflowY: SELF_SCROLLING_PANELS.includes(activePanel) ? 'hidden' : 'auto',
           overflowX: 'hidden',
         }}>
           {activePanel === 'water'     ? <WaterPanel /> :
            activePanel === 'steps'     ? <StepsPanel /> :
            activePanel === 'nutrition' ? <NutritionPanel /> :
+           activePanel === 'symptoms'  ? <SymptomsPanel /> :
            <PanelContent type={activePanel} />}
         </div>
       </div>
