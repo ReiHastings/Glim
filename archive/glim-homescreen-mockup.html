@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Glim Home Screen Mockup - Implementation Reference</title>
+<style>
+body { margin: 0; padding: 40px; background: #1a1a2e; display: flex; gap: 40px; justify-content: center; flex-wrap: wrap; font-family: -apple-system, system-ui, sans-serif; }
+h2 { color: #c8d0e8; font-size: 14px; font-weight: 400; text-align: center; margin: 0 0 12px; letter-spacing: 0.5px; }
+.notes { max-width: 360px; color: #8898c0; font-size: 12px; line-height: 1.6; padding: 20px; background: rgba(255,255,255,0.04); border-radius: 12px; border: 1px solid rgba(255,255,255,0.06); align-self: flex-start; }
+.notes h3 { color: #c8d0e8; font-size: 13px; margin: 0 0 8px; font-weight: 500; }
+.notes p { margin: 0 0 10px; }
+.notes code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+.notes ul { margin: 4px 0 10px; padding-left: 16px; }
+.notes li { margin-bottom: 4px; }
+.notes hr { border: none; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 0; }
+</style>
+</head>
+<body>
+
+<!-- ============================================================ -->
+<!--  PHONE MOCKUP                                                 -->
+<!-- ============================================================ -->
+<div>
+<h2>Glim home screen (companion mode)</h2>
+<div style="width:280px;background:#1c1c1e;border-radius:36px;padding:14px 14px 10px;border:3px solid #3a3a3c;position:relative;">
+<!-- Notch -->
+<div style="position:absolute;top:0;left:50%;transform:translateX(-50%);width:96px;height:22px;background:#1c1c1e;border-radius:0 0 14px 14px;z-index:10;"></div>
+
+<!-- Screen -->
+<div style="background:linear-gradient(180deg,#0d1028 0%,#10103a 30%,#150d32 65%,#0d0820 100%);border-radius:22px;padding:30px 10px 0;min-height:450px;display:flex;flex-direction:column;position:relative;overflow:hidden;">
+
+<!-- Stars -->
+<div style="position:absolute;top:20px;left:20px;width:3px;height:3px;border-radius:50%;background:#86efac;opacity:0.4;"></div>
+<div style="position:absolute;top:32px;right:24px;width:3px;height:3px;border-radius:50%;background:#c4b5fd;opacity:0.4;"></div>
+<div style="position:absolute;top:58px;left:44px;width:2px;height:2px;border-radius:50%;background:#5eead4;opacity:0.35;"></div>
+<div style="position:absolute;top:48px;right:50px;width:2px;height:2px;border-radius:50%;background:#a5b4fc;opacity:0.3;"></div>
+<div style="position:absolute;top:78px;right:20px;width:2px;height:2px;border-radius:50%;background:#f9a8d4;opacity:0.25;"></div>
+<div style="position:absolute;top:16px;left:95px;width:2px;height:2px;border-radius:50%;background:#a5b4fc;opacity:0.3;"></div>
+
+<!-- Mountain silhouettes -->
+<div style="position:absolute;bottom:50px;left:0;right:0;height:48px;">
+<svg width="100%" height="48" viewBox="0 0 250 48" preserveAspectRatio="none">
+<path d="M0 32 Q30 20 60 28 Q90 36 120 26 Q150 16 180 24 Q210 34 250 22 L250 48 L0 48 Z" fill="#08061a" opacity="0.5"/>
+<path d="M0 40 Q40 30 80 37 Q120 44 160 34 Q200 24 250 32 L250 48 L0 48 Z" fill="#060512" opacity="0.65"/>
+</svg>
+</div>
+
+<!-- Content -->
+<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding-top:10px;padding-bottom:4px;">
+
+<!-- Glim creature + speech bubble -->
+<div style="display:flex;flex-direction:column;align-items:center;">
+
+<!-- Creature SVG (accurate multi-hue Glim from DesktopPet.jsx) -->
+<svg viewBox="0 0 220 210" width="165" height="157" style="margin-bottom:3px;">
+  <defs>
+    <radialGradient id="wg" cx="50%" cy="38%" r="35%">
+      <stop offset="0%" stop-color="#c8d8f0" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#8090c0" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <!-- Tail (exact bezier from DesktopPet.jsx, curls right) -->
+  <path d="M110,175 Q115,188 125,195 Q138,204 145,197 Q150,188 142,184 Q134,181 132,186"
+    stroke="#5870a8" stroke-opacity="0.6" stroke-width="4.5" stroke-linecap="round" fill="none"/>
+  <circle cx="132" cy="186" r="3" fill="#a898d8" opacity="0.6"/>
+  <!-- Wings (teal left, purple right) -->
+  <ellipse cx="52" cy="118" rx="33" ry="21" fill="#507898" opacity="0.5" transform="rotate(-10 52 118)"/>
+  <ellipse cx="168" cy="118" rx="33" ry="21" fill="#6860a0" opacity="0.5" transform="rotate(10 168 118)"/>
+  <!-- Body -->
+  <ellipse cx="110" cy="123" rx="46" ry="53" fill="#7888b8" opacity="0.8"/>
+  <ellipse cx="110" cy="123" rx="46" ry="53" fill="url(#wg)" opacity="0.4"/>
+  <ellipse cx="110" cy="134" rx="26" ry="30" fill="#a8b8d8" opacity="0.15"/>
+  <!-- Body dots -->
+  <circle cx="82" cy="110" r="2" fill="#90b0d8" opacity="0.25"/>
+  <circle cx="138" cy="110" r="2" fill="#a090d0" opacity="0.25"/>
+  <circle cx="85" cy="130" r="1.5" fill="#90b0d8" opacity="0.2"/>
+  <circle cx="135" cy="130" r="1.5" fill="#a090d0" opacity="0.2"/>
+  <!-- Feet -->
+  <ellipse cx="96" cy="172" rx="8" ry="4.5" fill="#7088b8" opacity="0.55"/>
+  <ellipse cx="124" cy="172" rx="8" ry="4.5" fill="#7088b8" opacity="0.55"/>
+  <!-- Face disc -->
+  <ellipse cx="110" cy="93" rx="31" ry="27" fill="#a0a8cc" opacity="0.3"/>
+  <!-- Eyes (white with dark pupils) -->
+  <ellipse cx="97" cy="90" rx="11.5" ry="11.5" fill="rgba(255,255,255,0.93)"/>
+  <circle cx="97" cy="91" r="6.8" fill="#1a1530"/>
+  <circle cx="99" cy="87" r="2.3" fill="white" opacity="0.9"/>
+  <ellipse cx="123" cy="90" rx="11.5" ry="11.5" fill="rgba(255,255,255,0.93)"/>
+  <circle cx="123" cy="91" r="6.8" fill="#1a1530"/>
+  <circle cx="125" cy="87" r="2.3" fill="white" opacity="0.9"/>
+  <!-- Beak -->
+  <path d="M108,100 L110,104 L112,100" fill="#9080b8" opacity="0.75"/>
+  <!-- Blush -->
+  <ellipse cx="85" cy="98" rx="5.5" ry="2.8" fill="#d088c8" opacity="0.25"/>
+  <ellipse cx="135" cy="98" rx="5.5" ry="2.8" fill="#d088c8" opacity="0.25"/>
+  <!-- Antennae (curved beziers, teal left bobble, lavender right) -->
+  <path d="M98,70 Q92,52 88,40" stroke="#6890b0" stroke-opacity="0.5" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+  <circle cx="88" cy="40" r="5" fill="#98c0d8" opacity="0.8"/>
+  <path d="M122,70 Q128,52 132,40" stroke="#8068b0" stroke-opacity="0.5" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+  <circle cx="132" cy="40" r="5" fill="#c0a8e0" opacity="0.8"/>
+</svg>
+
+<!-- Speech bubble -->
+<div style="font-family:'Courier New',monospace;font-size:10px;color:rgba(200,210,230,0.65);margin-bottom:8px;background:rgba(255,255,255,0.06);padding:5px 12px;border-radius:9px;border:1px solid rgba(255,255,255,0.07);">three tasks down already. nice.</div>
+</div>
+
+<!-- Summary widgets row -->
+<div style="width:100%;padding:0 8px;margin-bottom:8px;">
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+
+<!-- Steps ring -->
+<div style="background:rgba(255,255,255,0.06);border-radius:12px;padding:9px 4px;text-align:center;border:1px solid rgba(255,255,255,0.06);">
+<div style="position:relative;width:42px;height:42px;margin:0 auto 4px;">
+<svg viewBox="0 0 40 40" width="42" height="42">
+<circle cx="20" cy="20" r="16" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="3.5"/>
+<circle cx="20" cy="20" r="16" fill="none" stroke="#5eead4" stroke-width="3.5" stroke-dasharray="71 100" stroke-linecap="round" transform="rotate(-90 20 20)"/>
+</svg>
+<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-family:-apple-system,sans-serif;font-size:10px;color:#5eead4;font-weight:600;">7.1k</div>
+</div>
+<div style="font-family:-apple-system,sans-serif;font-size:9px;color:rgba(200,210,230,0.5);">steps</div>
+</div>
+
+<!-- Water ring -->
+<div style="background:rgba(255,255,255,0.06);border-radius:12px;padding:9px 4px;text-align:center;border:1px solid rgba(255,255,255,0.06);">
+<div style="position:relative;width:42px;height:42px;margin:0 auto 4px;">
+<svg viewBox="0 0 40 40" width="42" height="42">
+<circle cx="20" cy="20" r="16" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="3.5"/>
+<circle cx="20" cy="20" r="16" fill="none" stroke="#60a5fa" stroke-width="3.5" stroke-dasharray="63 100" stroke-linecap="round" transform="rotate(-90 20 20)"/>
+</svg>
+<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-family:-apple-system,sans-serif;font-size:10px;color:#60a5fa;font-weight:600;">5/8</div>
+</div>
+<div style="font-family:-apple-system,sans-serif;font-size:9px;color:rgba(200,210,230,0.5);">water</div>
+</div>
+
+<!-- Tasks done -->
+<div style="background:rgba(255,255,255,0.06);border-radius:12px;padding:9px 4px;text-align:center;border:1px solid rgba(255,255,255,0.06);">
+<div style="position:relative;width:42px;height:42px;margin:0 auto 4px;">
+<svg viewBox="0 0 40 40" width="42" height="42">
+<circle cx="20" cy="20" r="16" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="3.5"/>
+<path d="M14 20l4 4 8-8" stroke="#a78bfa" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>
+<div style="position:absolute;bottom:2px;left:50%;transform:translateX(-50%);font-family:-apple-system,sans-serif;font-size:8px;color:#a78bfa;font-weight:600;">3 done</div>
+</div>
+<div style="font-family:-apple-system,sans-serif;font-size:9px;color:rgba(200,210,230,0.5);">tasks</div>
+</div>
+
+</div>
+</div>
+
+</div>
+
+<!-- Nav bar -->
+<div style="display:flex;justify-content:space-around;padding:8px 12px 6px;background:rgba(255,255,255,0.06);border-radius:14px;margin:0 2px;">
+
+<!-- Home (active) -->
+<div style="text-align:center;padding:2px 4px;">
+<svg viewBox="0 0 22 22" width="18" height="18" style="display:block;margin:0 auto 2px;">
+<path d="M3 17 L7 9 L10 13 L14 6 L19 17" fill="none" stroke="rgba(200,210,230,0.8)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M3 17 h16" stroke="rgba(200,210,230,0.8)" stroke-width="1.2" stroke-linecap="round"/>
+<circle cx="6" cy="5" r="0.8" fill="rgba(200,210,230,0.8)"/>
+<circle cx="10" cy="4" r="0.8" fill="rgba(200,210,230,0.8)"/>
+<circle cx="17" cy="5" r="0.8" fill="rgba(200,210,230,0.8)"/>
+</svg>
+<div style="font-size:7px;color:rgba(200,210,230,0.8);">home</div>
+</div>
+
+<!-- Focus (inactive) -->
+<div style="text-align:center;padding:2px 4px;">
+<svg viewBox="0 0 22 22" width="18" height="18" style="display:block;margin:0 auto 2px;">
+<circle cx="11" cy="11" r="7.5" fill="none" stroke="rgba(200,210,230,0.4)" stroke-width="1.3"/>
+<path d="M11 6v5l3 2.5" stroke="rgba(200,210,230,0.4)" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>
+<div style="font-size:7px;color:rgba(200,210,230,0.4);">focus</div>
+</div>
+
+<!-- Tasks (inactive) -->
+<div style="text-align:center;padding:2px 4px;">
+<svg viewBox="0 0 22 22" width="18" height="18" style="display:block;margin:0 auto 2px;">
+<path d="M6 8 L9 11 L16 4" fill="none" stroke="rgba(200,210,230,0.4)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M6 14 L9 17 L16 10" fill="none" stroke="rgba(200,210,230,0.4)" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+<div style="font-size:7px;color:rgba(200,210,230,0.4);">tasks</div>
+</div>
+
+<!-- Nutrition (inactive) -->
+<div style="text-align:center;padding:2px 4px;">
+<svg viewBox="0 0 22 22" width="18" height="18" style="display:block;margin:0 auto 2px;">
+<path d="M11 3 Q8 6 7 9 Q6 12 8 15 Q9 17 11 18 Q13 17 14 15 Q16 12 15 9 Q14 6 11 3Z" fill="none" stroke="rgba(200,210,230,0.4)" stroke-width="1.3" stroke-linejoin="round"/>
+<path d="M11 8 v6 M9 12 Q11 10 13 12" fill="none" stroke="rgba(200,210,230,0.4)" stroke-width="1" stroke-linecap="round"/>
+</svg>
+<div style="font-size:7px;color:rgba(200,210,230,0.4);">nutrition</div>
+</div>
+
+<!-- More (inactive) -->
+<div style="text-align:center;padding:2px 4px;">
+<svg viewBox="0 0 22 22" width="18" height="18" style="display:block;margin:0 auto 2px;">
+<circle cx="5" cy="11" r="1.8" fill="rgba(200,210,230,0.4)"/>
+<circle cx="11" cy="11" r="1.8" fill="rgba(200,210,230,0.4)"/>
+<circle cx="17" cy="11" r="1.8" fill="rgba(200,210,230,0.4)"/>
+</svg>
+<div style="font-size:7px;color:rgba(200,210,230,0.4);">more</div>
+</div>
+
+</div>
+
+</div>
+<!-- Home indicator -->
+<div style="width:110px;height:4px;background:#666;border-radius:2px;margin:8px auto 0;"></div>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<!--  IMPLEMENTATION NOTES                                         -->
+<!-- ============================================================ -->
+<div class="notes">
+<h3>Implementation notes for Claude Code</h3>
+
+<p>This HTML file is a pixel-accurate mockup of the Glim home screen (companion mode). Open it in a browser to see the target layout. All measurements, colors, and SVG paths are the actual values to use in implementation.</p>
+
+<hr>
+
+<h3>Layout structure (top to bottom)</h3>
+<ul>
+<li><strong>Background:</strong> Full-screen linear gradient (<code>#0d1028</code> to <code>#10103a</code> to <code>#150d32</code> to <code>#0d0820</code>) with scattered star dots (5 time-of-day colors) and mountain silhouette SVG at bottom</li>
+<li><strong>Glim creature:</strong> Large, centered, upper ~60% of screen. The actual OwlMoth component renders here. Width ~165px on mobile.</li>
+<li><strong>Speech bubble:</strong> Courier New, 10px, frosted glass style. Sits just below creature.</li>
+<li><strong>Summary widgets:</strong> 3-column grid just above nav bar. Each widget: <code>rgba(255,255,255,0.06)</code> bg, 12px border-radius, 1px border.</li>
+<li><strong>Nav bar:</strong> Persistent at bottom. <code>rgba(255,255,255,0.06)</code> bg, 14px border-radius. 5 items evenly spaced.</li>
+</ul>
+
+<hr>
+
+<h3>Summary widget specs</h3>
+<ul>
+<li><strong>Steps:</strong> Progress ring (teal <code>#5eead4</code>), current count inside, "steps" label below. Ring fills through tier milestones (2.5k/5k/7.5k/10k). stroke-dasharray controls fill amount.</li>
+<li><strong>Water:</strong> Progress ring (blue <code>#60a5fa</code>), fraction inside (e.g. "5/8"), "water" label. Tapping opens water companion panel.</li>
+<li><strong>Tasks:</strong> Checkmark icon (purple <code>#a78bfa</code>) with "N done" count below. No fraction, just total completed today. Tapping opens to-do list focus screen.</li>
+</ul>
+
+<p>Ring SVG technique: two overlapping circles. Background circle is the track (<code>rgba(255,255,255,0.08)</code>). Foreground circle has <code>stroke-dasharray</code> to show progress and <code>transform="rotate(-90 cx cy)"</code> to start from the top.</p>
+
+<hr>
+
+<h3>Nav bar specs</h3>
+<ul>
+<li><strong>Order:</strong> home, focus, tasks, nutrition, more</li>
+<li><strong>Active color:</strong> <code>rgba(200,210,230,0.8)</code></li>
+<li><strong>Inactive color:</strong> <code>rgba(200,210,230,0.4)</code></li>
+<li><strong>Icon size:</strong> 18x18px SVGs</li>
+<li><strong>Label:</strong> 7px, same color as icon</li>
+<li><strong>All icons use <code>currentColor</code></strong> so active/inactive is a single CSS color change on the parent div</li>
+</ul>
+
+<hr>
+
+<h3>Nav icon SVG paths</h3>
+
+<p><strong>Home (mountains + stars):</strong></p>
+<ul>
+<li>Peaks: <code>M3 17 L7 9 L10 13 L14 6 L19 17</code></li>
+<li>Ground: <code>M3 17 h16</code></li>
+<li>Stars: 3 circles at (6,5) (10,4) (17,5) r=0.8</li>
+</ul>
+
+<p><strong>Focus (clock):</strong></p>
+<ul>
+<li>Circle r=7.5 at (11,11)</li>
+<li>Hand: <code>M11 6v5l3 2.5</code></li>
+</ul>
+
+<p><strong>Tasks (double checkmarks):</strong></p>
+<ul>
+<li>Top: <code>M6 8 L9 11 L16 4</code> (stroke-width 1.6)</li>
+<li>Bottom: <code>M6 14 L9 17 L16 10</code> (stroke-width 1.3)</li>
+</ul>
+
+<p><strong>Nutrition (leaf):</strong></p>
+<ul>
+<li>Outline: <code>M11 3 Q8 6 7 9 Q6 12 8 15 Q9 17 11 18 Q13 17 14 15 Q16 12 15 9 Q14 6 11 3Z</code></li>
+<li>Veins: <code>M11 8 v6</code> + <code>M9 12 Q11 10 13 12</code></li>
+</ul>
+
+<p><strong>More (dots):</strong></p>
+<ul>
+<li>3 circles at (5,11) (11,11) (17,11) r=1.8</li>
+</ul>
+
+<hr>
+
+<h3>Color reference</h3>
+<ul>
+<li>Background gradient: <code>#0d1028</code>, <code>#10103a</code>, <code>#150d32</code>, <code>#0d0820</code></li>
+<li>Glass surface: <code>rgba(255,255,255,0.06)</code></li>
+<li>Glass border: <code>rgba(255,255,255,0.06-0.07)</code></li>
+<li>Speech bubble text: <code>rgba(200,210,230,0.65)</code></li>
+<li>Widget label text: <code>rgba(200,210,230,0.5)</code></li>
+<li>Steps accent: <code>#5eead4</code> (teal)</li>
+<li>Water accent: <code>#60a5fa</code> (blue)</li>
+<li>Tasks accent: <code>#a78bfa</code> (purple)</li>
+<li>Star colors: <code>#86efac</code> (green), <code>#5eead4</code> (teal), <code>#a5b4fc</code> (periwinkle), <code>#c4b5fd</code> (lavender), <code>#f9a8d4</code> (pink)</li>
+</ul>
+
+<hr>
+
+<h3>Companion panel behavior (not shown in mockup)</h3>
+<p>When a nav icon or widget is tapped, a panel slides up from the bottom (300ms ease-out) covering ~40% of screen height. Glim compresses to ~90% vertically. Drag handle at top to dismiss. Tap outside to dismiss. Only one panel open at a time.</p>
+
+<p>See <code>nav-icons-reference.md</code> for React component structure and <code>glim_project_documentation.Rmd</code> Section 8.10 for full nav system spec.</p>
+</div>
+
+</body>
+</html>

@@ -4,5 +4,13 @@ dist/
 *.log
 .env.local
 .env.*.local
+.Rhistory
+
+# Local-only working docs
 CLAUDE.md
-project documentation/
+docs/
+message_pools/
+.claude/
+
+# Pandoc renders of root markdown (regenerate from source)
+/*.html

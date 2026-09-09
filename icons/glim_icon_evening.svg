@@ -1,0 +1,115 @@
+<svg viewBox="-15 -10 250 260" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bodyG" cx="50%" cy="42%" r="48%">
+      <stop offset="0%" stop-color="rgba(209,179,238,0.95)" />
+      <stop offset="50%" stop-color="rgba(165,112,219,0.8)" />
+      <stop offset="100%" stop-color="rgba(122,55,189,0.6)" />
+    </radialGradient>
+    <radialGradient id="glow" cx="50%" cy="38%" r="35%">
+      <stop offset="0%" stop-color="rgba(229,210,248,0.5)" />
+      <stop offset="100%" stop-color="rgba(203,170,237,0)" />
+    </radialGradient>
+    <radialGradient id="belly" cx="50%" cy="55%" r="30%">
+      <stop offset="0%" stop-color="rgba(241,207,241,0.6)" />
+      <stop offset="100%" stop-color="rgba(226,156,226,0)" />
+    </radialGradient>
+    <radialGradient id="spec" cx="38%" cy="30%" r="22%">
+      <stop offset="0%" stop-color="rgba(255,255,255,0.4)" />
+      <stop offset="100%" stop-color="rgba(255,255,255,0)" />
+    </radialGradient>
+    <filter id="outerGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feFlood flood-color="rgba(165,107,223,0.45)" result="color" />
+      <feComposite in="color" in2="blur" operator="in" result="glow" />
+      <feMerge>
+        <feMergeNode in="glow" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <g >
+    <!-- Tail -->
+    <path d="M110,185 Q115,200 125,208 Q140,218 148,210 Q155,200 145,195 Q135,192 132,198"
+      stroke="rgba(127,57,197,0.55)" stroke-width="5" stroke-linecap="round" fill="none" />
+    <circle cx="128" cy="199" r="4" fill="rgba(203,77,203,0.5)" />
+
+    <!-- Left wing -->
+    <ellipse cx="52" cy="125" rx="35" ry="22" fill="rgba(158,99,216,0.55)" transform="rotate(-10 52 125)" />
+    <ellipse cx="52" cy="125" rx="35" ry="22" fill="url(#spec)" transform="rotate(-10 52 125)" opacity="0.3" />
+    <circle cx="40" cy="120" r="2.5" fill="rgba(237,170,237,0.4)" />
+    <circle cx="35" cy="127" r="1.8" fill="rgba(235,162,198,0.3)" />
+    <circle cx="45" cy="130" r="2" fill="rgba(232,149,232,0.35)" />
+    <circle cx="50" cy="118" r="3" fill="rgba(237,170,204,0.25)" />
+    <circle cx="30" cy="124" r="1.5" fill="rgba(238,179,238,0.3)" />
+
+    <!-- Right wing -->
+    <ellipse cx="168" cy="125" rx="35" ry="22" fill="rgba(158,99,216,0.55)" transform="rotate(10 168 125)" />
+    <ellipse cx="168" cy="125" rx="35" ry="22" fill="url(#spec)" transform="rotate(10 168 125)" opacity="0.3" />
+    <circle cx="180" cy="120" r="2.5" fill="rgba(237,170,237,0.4)" />
+    <circle cx="185" cy="127" r="1.8" fill="rgba(235,162,198,0.3)" />
+    <circle cx="175" cy="130" r="2" fill="rgba(232,149,232,0.35)" />
+    <circle cx="170" cy="118" r="3" fill="rgba(237,170,204,0.25)" />
+    <circle cx="190" cy="124" r="1.5" fill="rgba(238,179,238,0.3)" />
+
+    <!-- Body -->
+    <ellipse cx="110" cy="130" rx="48" ry="55" fill="url(#bodyG)" />
+    <ellipse cx="110" cy="130" rx="48" ry="55" fill="url(#glow)" />
+    <ellipse cx="110" cy="142" rx="28" ry="32" fill="url(#belly)" />
+
+    <!-- Body dots -->
+    <circle cx="82" cy="115" r="2.5" fill="rgba(238,179,238,0.35)" />
+    <circle cx="78" cy="128" r="1.8" fill="rgba(237,170,204,0.25)" />
+    <circle cx="85" cy="138" r="2" fill="rgba(235,162,235,0.3)" />
+    <circle cx="75" cy="142" r="1.5" fill="rgba(238,179,209,0.2)" />
+    <circle cx="88" cy="122" r="1.5" fill="rgba(241,191,241,0.2)" />
+    <circle cx="138" cy="115" r="2.5" fill="rgba(238,179,238,0.35)" />
+    <circle cx="142" cy="128" r="1.8" fill="rgba(237,170,204,0.25)" />
+    <circle cx="135" cy="138" r="2" fill="rgba(235,162,235,0.3)" />
+    <circle cx="145" cy="142" r="1.5" fill="rgba(238,179,209,0.2)" />
+    <circle cx="132" cy="122" r="1.5" fill="rgba(241,191,241,0.2)" />
+    <circle cx="102" cy="145" r="1.8" fill="rgba(242,206,242,0.25)" />
+    <circle cx="118" cy="143" r="2" fill="rgba(241,191,216,0.2)" />
+    <circle cx="110" cy="155" r="1.5" fill="rgba(240,197,240,0.2)" />
+    <circle cx="105" cy="160" r="1.2" fill="rgba(240,187,214,0.18)" />
+    <circle cx="115" cy="158" r="1.8" fill="rgba(243,200,243,0.22)" />
+    <circle cx="95" cy="108" r="1.5" fill="rgba(239,183,211,0.2)" />
+    <circle cx="125" cy="108" r="1.5" fill="rgba(239,183,211,0.2)" />
+    <circle cx="100" cy="168" r="1" fill="rgba(241,191,241,0.15)" />
+    <circle cx="120" cy="166" r="1.2" fill="rgba(240,187,214,0.15)" />
+
+    <!-- Feet -->
+    <ellipse cx="96" cy="182" rx="9" ry="5" fill="rgba(178,132,224,0.7)" />
+    <ellipse cx="124" cy="182" rx="9" ry="5" fill="rgba(178,132,224,0.7)" />
+
+    <!-- Face disc -->
+    <ellipse cx="110" cy="98" rx="32" ry="28" fill="rgba(239,209,239,0.35)" />
+
+    <!-- Eyes -->
+    <ellipse cx="97" cy="95" rx="12" ry="12" fill="rgba(255,255,255,0.95)" />
+    <circle cx="97" cy="95" r="7" fill="rgb(53,22,48)" />
+    <circle cx="99" cy="92" r="2.5" fill="rgba(255,255,255,0.9)" />
+    <ellipse cx="123" cy="95" rx="12" ry="12" fill="rgba(255,255,255,0.95)" />
+    <circle cx="123" cy="95" r="7" fill="rgb(53,22,48)" />
+    <circle cx="125" cy="92" r="2.5" fill="rgba(255,255,255,0.9)" />
+
+    <!-- Beak -->
+    <path d="M108,105 L110,109 L112,105" fill="rgba(205,125,205,0.8)" />
+
+    <!-- Blush -->
+    <ellipse cx="85" cy="103" rx="6" ry="3" fill="rgba(226,140,183,0.3)" />
+    <ellipse cx="135" cy="103" rx="6" ry="3" fill="rgba(226,140,183,0.3)" />
+
+    <!-- Left antenna -->
+    <path d="M98,75 Q92,55 88,42" stroke="rgba(178,128,228,0.6)"
+      stroke-width="2.5" stroke-linecap="round" fill="none" />
+    <circle cx="88" cy="42" r="6" fill="rgba(238,159,238,0.85)" />
+    <circle cx="88" cy="42" r="9" fill="rgba(237,170,237,0.15)" />
+
+    <!-- Right antenna -->
+    <path d="M122,75 Q128,55 132,42" stroke="rgba(178,128,228,0.6)"
+      stroke-width="2.5" stroke-linecap="round" fill="none" />
+    <circle cx="132" cy="42" r="6" fill="rgba(238,159,238,0.85)" />
+    <circle cx="132" cy="42" r="9" fill="rgba(237,170,237,0.15)" />
+  </g>
+</svg>

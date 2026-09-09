@@ -149,10 +149,15 @@ glim/
 │   ├── package.json                # React 19, Zustand 5, Firebase, Vite 8
 │   └── vite.config.js              # React + Tailwind + PWA plugin config
 ├── firestore.rules                 # Per-user read/write security rules
-├── project documentation/          # RMarkdown design docs and session logs
+├── archive/                        # Pre-Vite single-file prototypes (reference only)
+│   ├── glim.html                   # Original single-file React build
+│   ├── tater.html                  # Sibling prototype, separate app
+│   ├── glim-messages.txt           # Message dump from the prototype
+│   └── glim-homescreen-mockup.html # Early homescreen mockup
+├── docs/                           # RMarkdown design docs and session logs (not tracked)
 │   ├── figures/                    # Architecture diagrams (SVG/PNG)
 │   └── *.Rmd                       # Master doc, history, handoff, environment
-├── .Rhistory                       # (not tracked)
+├── icons/                          # Source icon art (exports live in client/public/)
 ├── .claude/                        # (not tracked)
 └── .env.local                      # (not tracked)
 ```
@@ -171,7 +176,7 @@ glim/
 
 ## Tools and Libraries
 
-React 19, Vite 8, Tailwind CSS 4 (`@tailwindcss/vite`), Zustand 5 (state management), Firebase Authentication (Google sign-in), Firebase Firestore (cloud sync), `vite-plugin-pwa` (service worker, offline support), ESLint with `eslint-plugin-react-hooks` and `eslint-plugin-react-refresh`, sharp (icon generation)
+React 19, Vite 8, Tailwind CSS 4 (`@tailwindcss/vite`), Zustand 5 (state management), Firebase Authentication (Google sign-in), Firebase Firestore (cloud sync), `vite-plugin-pwa` (service worker, offline support), ESLint with `eslint-plugin-react-hooks` and `eslint-plugin-react-refresh`
 
 ## Author
 
