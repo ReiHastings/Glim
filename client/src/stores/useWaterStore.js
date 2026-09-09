@@ -17,6 +17,14 @@ import { todayStr, dateStr, toLogicalDateStr } from '../utils/dateUtils';
 
 const STORAGE_KEY = 'glim-water';
 
+// Unique id for new entries. crypto.randomUUID guarantees cross-device
+// uniqueness; the fallback covers non-secure contexts. Date.now() alone can
+// collide for two rapid logs (or two devices at the same millisecond), which
+// would corrupt soft-delete targeting and sync dedupe.
+function genId() {
+  try { return crypto.randomUUID(); } catch { return String(Date.now()) + Math.random(); }
+}
+
 // --- Persistence helpers ---
 
 function loadWater() {
@@ -24,7 +32,12 @@ function loadWater() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return JSON.parse(raw);
   } catch { /* ignore */ }
-  return { entries: [], bottleOz: 24, goal: 6, configUpdatedAt: new Date().toISOString() };
+  // configUpdatedAt defaults to epoch (not now) so an untouched or freshly
+  // cleared store looks OLDER than any real remote config. Otherwise, after an
+  // account switch clears localStorage, a returning user's default config would
+  // out-timestamp and overwrite their real saved bottleOz/goal on first sync.
+  // A genuine config edit (setBottleOz/setGoal) stamps the real current time.
+  return { entries: [], bottleOz: 24, goal: 6, configUpdatedAt: new Date(0).toISOString() };
 }
 
 function saveWater(state) {
@@ -42,7 +55,7 @@ function saveWater(state) {
 
 function countToday(entries) {
   const today = todayStr();
-  return entries.filter(e => dateStr(e.timestamp) === today).length;
+  return entries.filter(e => !e.deletedAt && dateStr(e.timestamp) === today).length;
 }
 
 // Consecutive days at or above goal, counting backward from today
@@ -51,6 +64,7 @@ function computeStreak(entries, goal) {
 
   const byDate = {};
   for (const e of entries) {
+    if (e.deletedAt) continue;
     const d = dateStr(e.timestamp);
     byDate[d] = (byDate[d] || 0) + 1;
   }
@@ -74,6 +88,7 @@ function computeStreak(entries, goal) {
 function computeWeeklyAvg(entries) {
   const byDate = {};
   for (const e of entries) {
+    if (e.deletedAt) continue;
     const d = dateStr(e.timestamp);
     byDate[d] = (byDate[d] || 0) + 1;
   }
@@ -96,11 +111,11 @@ export const useWaterStore = create((set, get) => ({
   entries:         initial.entries,
   bottleOz:        initial.bottleOz,
   goal:            initial.goal,
-  configUpdatedAt: initial.configUpdatedAt ?? new Date().toISOString(),
+  configUpdatedAt: initial.configUpdatedAt ?? new Date(0).toISOString(),
 
   logBottle: () => {
     const entry = {
-      id:        Date.now(),
+      id:        genId(),
       timestamp: Date.now(),
       bottleOz:  get().bottleOz,
     };
@@ -114,10 +129,21 @@ export const useWaterStore = create((set, get) => ({
   undoLast: () => {
     set(state => {
       const today = todayStr();
-      const todayEntries = state.entries.filter(e => dateStr(e.timestamp) === today);
-      if (todayEntries.length === 0) return state;
-      const lastId = todayEntries[todayEntries.length - 1].id;
-      const next = { ...state, entries: state.entries.filter(e => e.id !== lastId) };
+      // Most recent non-deleted entry for today, by timestamp (not array order,
+      // which can change after a sync merge).
+      const candidates = state.entries
+        .filter(e => !e.deletedAt && dateStr(e.timestamp) === today)
+        .sort((a, b) => a.timestamp - b.timestamp);
+      if (candidates.length === 0) return state;
+      const lastId = candidates[candidates.length - 1].id;
+      // Soft-delete (set deletedAt) instead of removing, so the deletion
+      // propagates on sync and an already-pushed bottle cannot reappear on the
+      // next pull. Selectors and pushes both key off deletedAt.
+      const deletedAt = new Date().toISOString();
+      const next = {
+        ...state,
+        entries: state.entries.map(e => (e.id === lastId ? { ...e, deletedAt } : e)),
+      };
       saveWater(next);
       return next;
     });
@@ -146,7 +172,7 @@ export const useWaterStore = create((set, get) => ({
       entries:         data.entries,
       bottleOz:        data.bottleOz,
       goal:            data.goal,
-      configUpdatedAt: data.configUpdatedAt ?? new Date().toISOString(),
+      configUpdatedAt: data.configUpdatedAt ?? new Date(0).toISOString(),
     });
   },
 
