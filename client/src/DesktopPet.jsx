@@ -3,7 +3,7 @@
 // Project:     Glim
 // Author:      Reina Hastings (reinahastings13@gmail.com)
 // Created:     2026-03-25
-// Last Modified: 2026-09-06
+// Last Modified: 2026-09-09
 // Purpose:     Main Glim application component. Owns all interaction logic,
 //              timer-based behaviors, and state coordination across stores.
 //              Sub-components (Background, OwlMoth, panels, etc.) are in
@@ -41,6 +41,9 @@ import CompanionPanel from './components/CompanionPanel';
 import MoreMenu from './components/MoreMenu';
 import SymptomDayPrompt from './components/SymptomDayPrompt';
 import { todayStr } from './utils/dateUtils';
+import {
+  REMINDER_STAMP_KEY, shouldPromptForClearDay, dayHasRecord, resolveClearDayAnswer,
+} from './utils/symptomReminder';
 
 
 export default function DesktopPet() {
@@ -76,6 +79,7 @@ export default function DesktopPet() {
   // ---- Responsive layout ----
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 600);
   const [showDayPrompt, setShowDayPrompt] = useState(false);
+  const [dayPromptError, setDayPromptError] = useState(null);
   useEffect(() => {
     const handler = () => setIsMobile(window.innerWidth < 600);
     window.addEventListener('resize', handler);
@@ -91,6 +95,11 @@ export default function DesktopPet() {
   const { reload: reloadNutrition } = useNutritionStore();
   const { reload: reloadNutritionLibrary } = useNutritionLibraryStore();
   const { reload: reloadSymptoms }         = useSymptomsStore();
+  // Subscriptions that let the reminder card react to the day acquiring a
+  // record (an entry logged, an episode opened, a clear day marked, or any of
+  // those arriving from another device via a sync pull).
+  const symptomLogs  = useSymptomsStore(s => s.logs);
+  const clearDayRows = useSymptomClearDaysStore(s => s.days);
   const { reload: reloadSymptomsLibrary }  = useSymptomsLibraryStore();
   const { reload: reloadSymptomsCategories } = useSymptomsCategoriesStore();
   const { reload: reloadSymptomClearDays }   = useSymptomClearDaysStore();
@@ -450,24 +459,31 @@ export default function DesktopPet() {
   // 16.4+; that is a separate project. This degrades correctly and needs no data
   // model change if push is added later.
   //
+  // The decisions live in utils/symptomReminder.js as pure functions; this
+  // component only gathers their inputs and applies their outputs.
+  //
   // Fires on app open and on tab foreground, at most ONCE PER LOGICAL DAY (the
-  // stamp is per-device and deliberately unsynced: whether this device already
-  // asked today is not a fact about the user's health record). Shows only when
-  // the day genuinely has no record either way - no entries AND no clear-day row.
+  // stamp is per-device and deliberately unsynced). Shows only when the day has
+  // no record either way - no entries AND no clear-day row.
+  const readStamp = () => {
+    try { return localStorage.getItem(REMINDER_STAMP_KEY); } catch { return null; }
+  };
+
   useEffect(() => {
     if (!symptomReminderEnabled) return;
 
-    const STAMP_KEY = 'glim-symptom-reminder-prompted';
-
     const evaluate = () => {
       const today = todayStr();
-      try {
-        if (localStorage.getItem(STAMP_KEY) === today) return;
-      } catch { /* ignore */ }
-      if (new Date().getHours() < symptomReminderHour) return;
-      if (useSymptomsStore.getState().getTodayEntries().length > 0) return;
-      if (useSymptomClearDaysStore.getState().isClear(today)) return;
-      setShowDayPrompt(true);
+      const show = shouldPromptForClearDay({
+        enabled:         true,
+        hourNow:         new Date().getHours(),
+        reminderHour:    symptomReminderHour,
+        stampedDate:     readStamp(),
+        today,
+        presentCount:    useSymptomsStore.getState().getAffectedDays(today, today).get(today)?.size ?? 0,
+        isClearToday:    useSymptomClearDaysStore.getState().isClear(today),
+      });
+      if (show) setShowDayPrompt(true);
     };
 
     evaluate();
@@ -476,21 +492,69 @@ export default function DesktopPet() {
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [symptomReminderEnabled, symptomReminderHour]);
 
-  // Both answers stamp the day, so the prompt cannot reappear on the next tab
-  // foreground. "yes" writes the W6 clear-day record and lets Glim acknowledge it
-  // through the same rate-limited path a manual clear day uses.
-  const stampDayPrompt = useCallback(() => {
-    try { localStorage.setItem('glim-symptom-reminder-prompted', todayStr()); }
-    catch { /* ignore */ }
-    setShowDayPrompt(false);
+  // The card tracks its own premise. If, while it is showing, the day acquires a
+  // record (the user logs a symptom, opens an episode, or marks the day clear
+  // from the panel, or a sync pull brings any of those in), the question is
+  // moot and the card goes away WITHOUT stamping: the gate above already
+  // returns early on any of those conditions, so it cannot come back today.
+  // This is what closes the window in which a stale card could be answered
+  // "yes" against an episode that opened after it appeared.
+  useEffect(() => {
+    if (!showDayPrompt) return;
+    const today = todayStr();
+    const moot = dayHasRecord({
+      presentCount: useSymptomsStore.getState().getAffectedDays(today, today).get(today)?.size ?? 0,
+      isClearToday:    useSymptomClearDaysStore.getState().isClear(today),
+    });
+    if (moot) {
+      setShowDayPrompt(false);
+      setDayPromptError(null);
+    }
+  }, [showDayPrompt, symptomLogs, clearDayRows]);
+
+  // Applies a resolveClearDayAnswer outcome. The ONLY place the stamp is
+  // written, so no answer path can stamp without going through the decision.
+  const applyDayPromptOutcome = useCallback((outcome) => {
+    if (outcome.stamp) {
+      try { localStorage.setItem(REMINDER_STAMP_KEY, todayStr()); }
+      catch { /* ignore */ }
+    }
+    if (outcome.close) {
+      setShowDayPrompt(false);
+      setDayPromptError(null);
+    } else {
+      setDayPromptError(outcome.error);
+    }
   }, []);
 
+  // "yes" writes the W6 clear-day record and lets Glim acknowledge it through
+  // the same rate-limited path a manual clear day uses. A refusal (a symptom is
+  // present today) keeps the card up with the reason and does NOT stamp - the
+  // same handling SymptomsPanel.handleClearDay gives the identical refusal.
   const confirmClearDay = useCallback(() => {
-    const openEpisodes = useSymptomsStore.getState().getOpenEpisodes();
-    const result = useSymptomClearDaysStore.getState().markClear(todayStr(), openEpisodes);
+    const today    = todayStr();
+    const affected = useSymptomsStore.getState().getAffectedDays(today, today).get(today) ?? new Set();
+    const result   = useSymptomClearDaysStore.getState().markClear(today, affected);
+    // On refusal, replace the store's generic reason with the same wording the
+    // panel uses: name the symptom, and say "end it first?" ONLY when an open
+    // episode is the cause - a closed episode that ran into today has nothing
+    // to end.
+    let described = result;
+    if (!result.ok && affected.size > 0) {
+      const open   = useSymptomsStore.getState().getOpenEpisodes().find(e => affected.has(e.symptomId));
+      const nameOf = (id) => useSymptomsLibraryStore.getState().getItem(id)?.name ?? 'a symptom';
+      described = { ...result, error: open
+        ? `${nameOf(open.symptomId)} is still going. end it first?`
+        : `${nameOf([...affected][0])} was present today.` };
+    }
+    const outcome      = resolveClearDayAnswer('yes', described);
     if (result.ok) setPendingReaction('clear-day');
-    stampDayPrompt();
-  }, [setPendingReaction, stampDayPrompt]);
+    applyDayPromptOutcome(outcome);
+  }, [setPendingReaction, applyDayPromptOutcome]);
+
+  const dismissDayPrompt = useCallback(() => {
+    applyDayPromptOutcome(resolveClearDayAnswer('not-now'));
+  }, [applyDayPromptOutcome]);
 
   // ---- Journal save ----
   const saveJournalEntry = useCallback((text) => {
@@ -925,7 +989,7 @@ export default function DesktopPet() {
       <MoreMenu />
 
       {showDayPrompt && (
-        <SymptomDayPrompt onConfirm={confirmClearDay} onDismiss={stampDayPrompt} />
+        <SymptomDayPrompt onConfirm={confirmClearDay} onDismiss={dismissDayPrompt} error={dayPromptError} />
       )}
 
       <SettingsView />

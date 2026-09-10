@@ -3,14 +3,18 @@
 // Project:     Glim
 // Author:      Reina Hastings (reinahastings13@gmail.com)
 // Created:     2026-09-06
-// Last Modified: 2026-09-06
+// Last Modified: 2026-09-09
 // Purpose:     The end-of-day symptom reminder's UI: a small, dismissible card
 //              asking whether an unlogged day was a clear one. IN-APP ONLY - it
 //              is not a Web Push or Notification API surface, deliberately (see
 //              DesktopPet's reminder effect for why that is a separate project).
 //              Neutral wording: it asks a question about the record, it does not
 //              congratulate a clear day or imply the user forgot something.
-// Inputs:      props: onConfirm(), onDismiss()
+// Inputs:      props: onConfirm(), onDismiss(), error (string | null; shown
+//              under the question when "yes" was refused, so the user learns
+//              why instead of watching the card close as if it had succeeded;
+//              the caller composes the wording, since only it knows whether an
+//              open episode or a closed one is the cause)
 // Outputs:     Portal-rendered card pinned above the nav bar
 // -----------------------------------------------------------------------------
 
@@ -18,7 +22,7 @@ import { createPortal } from 'react-dom';
 import { SYMPTOM_COLORS as C, MONO } from '../utils/symptomTheme';
 import { useUIStore } from '../stores/useUIStore';
 
-export default function SymptomDayPrompt({ onConfirm, onDismiss }) {
+export default function SymptomDayPrompt({ onConfirm, onDismiss, error = null }) {
   const navBarHeight = useUIStore(s => s.navBarHeight);
 
   return createPortal(
@@ -31,6 +35,11 @@ export default function SymptomDayPrompt({ onConfirm, onDismiss }) {
     }}>
       <span style={{ ...MONO, fontSize: 'var(--glim-text-2xs)', color: C.textMuted, flex: 1, minWidth: 0 }}>
         nothing logged today - was it a clear day?
+        {error && (
+          <span style={{ display: 'block', marginTop: 4, color: C.danger }}>
+            {error}
+          </span>
+        )}
       </span>
       <button
         onClick={onConfirm}

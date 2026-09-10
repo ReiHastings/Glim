@@ -3,7 +3,7 @@
 // Project:     Glim
 // Author:      Reina Hastings (reinahastings13@gmail.com)
 // Created:     2026-08-14
-// Last Modified: 2026-09-06
+// Last Modified: 2026-09-09
 // Purpose:     Symptom diary companion panel. Renders inside CompanionPanel when
 //              activePanel === 'symptoms'. A one-tap chip grid over today's
 //              entries: tapping a chip logs a moment instantly (no form, no
@@ -35,7 +35,7 @@ import SymptomEntryRow from './SymptomEntryRow';
 import SymptomEditSheet from './SymptomEditSheet';
 import { SYMPTOM_COLORS as C, MONO } from '../utils/symptomTheme';
 import { DEFAULT_CATEGORY_ID } from '../utils/symptomCategories';
-import { todayStr } from '../utils/dateUtils';
+import { todayStr, toLogicalDateStr } from '../utils/dateUtils';
 
 const UNDO_MS = 4000;
 
@@ -166,7 +166,26 @@ export default function SymptomsPanel() {
   const today        = todayStr();
   const todayEntries = symptoms.getTodayEntries();
   const openEpisodes = symptoms.getOpenEpisodes();
-  const isClearToday = clearDays.isClear(today);
+
+  // The symptoms present on a day, as the clear-days store needs them. Uses the
+  // W4 day-level primitive, so a closed episode that spanned the day counts, not
+  // only an open one.
+  const affectedOn    = (date) => symptoms.getAffectedDays(date, date).get(date) ?? new Set();
+  const affectedToday = affectedOn(today);
+
+  // "Present today" is the affected-days notion, NOT todayEntries.length. They
+  // differ for a closed episode that started on an earlier logical day and
+  // ended today: it is present (markClear refuses) but not in the today list
+  // (which shows today's entries plus OPEN episodes only). Everything that
+  // decides whether a clear day is possible keys on this, so the heading, the
+  // control and the refusal can never contradict each other.
+  const presentToday = affectedToday.size > 0;
+
+  // PRECEDENCE (see the clear-days store header): a day with any entry is never
+  // shown as clear, whatever the store holds. Two devices can disagree offline
+  // and last-write-wins resolves by timestamp, so the rule is applied on read
+  // as well as on write.
+  const isClearToday = clearDays.isClear(today) && !presentToday;
 
   // Cross-store composition: the panel derives per-symptom recency from the log
   // and hands it to the library selector. The library store never reads the log
@@ -220,14 +239,42 @@ export default function SymptomsPanel() {
   // ---- Logging ----
 
   // Every path that writes an entry funnels through here, so the two invariants
-  // that must hold on EVERY log hold in exactly one place: today stops being a
-  // clear day, and Glim is told something happened.
+  // that must hold on EVERY log hold in exactly one place: the entry's day stops
+  // being a clear day, and Glim is told something happened. Keyed on the ENTRY'S
+  // date (read fresh from the store, since the render snapshot predates the
+  // write), not on "today", and unmarked unconditionally so the store can lay a
+  // tombstone even when it holds no row (D4).
   const afterLog = (entryId, label) => {
-    if (clearDays.isClear(today)) clearDays.unmarkClear(today);
+    const loggedDate = useSymptomsStore.getState().logs.find(e => e.id === entryId)?.date ?? today;
+    clearDays.unmarkClear(loggedDate);
     setClearError(null);
     setPendingReaction('symptom-logged');
     showUndo(`logged ${label}`, entryId);
     return entryId;
+  };
+
+  // The edit sheet's commit. updateEntry re-derives `date` when startedAt moves,
+  // so the entry may now sit on a different day than it did - including a past
+  // day the user had marked clear (D3). The same rule as afterLog, keyed on the
+  // RESULTING date.
+  // The start day is tombstoned unconditionally (the D4 rule). The REST of an
+  // episode's span is handled by unmarking any clear row this device already
+  // knows about inside it: an episode left open for months spans hundreds of
+  // days, and tombstoning every one on every edit would be unbounded, whereas
+  // known clear rows are few. A clear row for a span day that is still in
+  // flight from another device is caught by the read-side precedence instead.
+  const handleCommit = (entryId, fields) => {
+    const result = symptoms.updateEntry(entryId, fields);
+    if (result.ok) {
+      const e = result.entry;
+      clearDays.unmarkClear(e.date);
+      if (e.kind === 'episode') {
+        const spanStart = e.date;
+        const spanEnd   = e.endedAt ? toLogicalDateStr(new Date(e.endedAt)) : today;
+        for (const d of clearDays.getClearDays(spanStart, spanEnd)) clearDays.unmarkClear(d);
+      }
+    }
+    return result;
   };
 
   // ---- Handlers ----
@@ -277,9 +324,11 @@ export default function SymptomsPanel() {
   };
 
   // ---- Clear day ----
-  // Refused while an episode is open: "nothing today" and "this is still going"
-  // are contradictory claims about the same day, so the user is pointed at the
-  // open episode instead of being silently overruled.
+  // Refused when any symptom is present today: "nothing today" and "a symptom
+  // was logged today" are contradictory claims about the same day, so the user
+  // is pointed at what is logged instead of being silently overruled. The
+  // control is disabled while today has entries, so this path is normally
+  // reached only by a race.
 
   const handleClearDay = () => {
     if (isClearToday) {
@@ -287,9 +336,12 @@ export default function SymptomsPanel() {
       setClearError(null);
       return;
     }
-    const result = clearDays.markClear(today, openEpisodes);
+    const result = clearDays.markClear(today, affectedToday);
     if (!result.ok) {
-      setClearError(`${nameFor(openEpisodes[0]?.symptomId)} is still going. end it first?`);
+      const open = openEpisodes.find(e => affectedToday.has(e.symptomId));
+      setClearError(open
+        ? `${nameFor(open.symptomId)} is still going. end it first?`
+        : `${nameFor([...affectedToday][0])} was present today.`);
       return;
     }
     setClearError(null);
@@ -427,7 +479,9 @@ export default function SymptomsPanel() {
           // Neutral by design: a statement of fact, never a prompt to log.
           <div style={{ ...MONO, fontSize: 'var(--glim-text-xs)', color: C.textFaint,
             textAlign: 'center', padding: '22px 0' }}>
-            {isClearToday ? 'marked as a clear day' : 'no symptoms logged today'}
+            {isClearToday ? 'marked as a clear day'
+              : presentToday ? 'an earlier episode ran into today'
+              : 'no symptoms logged today'}
           </div>
         ) : (
           todayEntries.map(entry => (
@@ -454,17 +508,24 @@ export default function SymptomsPanel() {
             {clearError}
           </div>
         )}
+        {/* Disabled, not hidden, while today has entries: the row keeps its
+            height so nothing below shifts, and the label states the fact. */}
         <button
           onClick={handleClearDay}
+          disabled={!isClearToday && presentToday}
           style={{
             ...MONO, fontSize: 'var(--glim-text-2xs)', width: '100%',
             color: isClearToday ? C.teal : C.textFaint,
             background: 'none',
             border: `1px solid ${isClearToday ? C.tealBorder : C.fieldBorder}`,
-            borderRadius: 12, padding: '9px 0', cursor: 'pointer',
+            borderRadius: 12, padding: '9px 0',
+            cursor: (!isClearToday && presentToday) ? 'default' : 'pointer',
+            opacity: (!isClearToday && presentToday) ? 0.5 : 1,
           }}
         >
-          {isClearToday ? 'clear day · tap to undo' : 'nothing today'}
+          {isClearToday ? 'clear day · tap to undo'
+            : presentToday ? 'symptoms present today'
+            : 'nothing today'}
         </button>
       </div>
 
@@ -473,7 +534,7 @@ export default function SymptomsPanel() {
         <SymptomEditSheet
           entry={editingEntry}
           symptomName={nameFor(editingEntry.symptomId)}
-          onCommit={(fields) => symptoms.updateEntry(editingEntry.id, fields)}
+          onCommit={(fields) => handleCommit(editingEntry.id, fields)}
           onDelete={() => symptoms.softDelete(editingEntry.id)}
           onLogAgain={() => handleAgain(editingEntry)}
           onClose={() => setEditingId(null)}

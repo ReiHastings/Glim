@@ -3,7 +3,7 @@
 // Project:     Glim
 // Author:      Reina Hastings (reinahastings13@gmail.com)
 // Created:     2026-09-06
-// Last Modified: 2026-09-06
+// Last Modified: 2026-09-09
 // Purpose:     Zustand store for "nothing today" records. Persists to
 //              localStorage under key 'glim-symptom-days'. A clear day makes
 //              ABSENCE OF SYMPTOMS distinguishable from ABSENCE OF DATA, which is
@@ -18,12 +18,29 @@
 //              THE DOCUMENT ID IS THE LOGICAL DATE STRING. That makes the record
 //              naturally idempotent per day (one row can only ever exist once)
 //              and safe under the id-keyed last-write-wins sync.
+//
+//              PRECEDENCE RULE (D3/D4, 2026-09-08): a clear-day row is only
+//              meaningful for a day with NO symptom entries. Writers enforce
+//              this (markClear refuses an affected day; every entry write
+//              unmarks the entry's start day and any KNOWN clear rows in its
+//              span), but two devices can still disagree
+//              offline and last-write-wins resolves by timestamp, not by rule.
+//              So READERS must apply the precedence too: a day with any entry
+//              is never displayed or counted as clear, whatever this store
+//              says. SymptomsPanel derives isClearToday that way, and any
+//              future consumer of getClearDays must subtract getAffectedDays
+//              over the same range.
+//
+//              A consequence worth knowing: mark a day clear, log a symptom
+//              (the row is tombstoned), then undo the log. The day is now "no
+//              record", not "clear". The earlier claim is not restored, and the
+//              reminder may ask again. Deliberate: absence of data is the
+//              honest state once the user has changed their mind twice.
 // Inputs:      None (reads localStorage on import)
 // Outputs:     Zustand store hook exported as useSymptomClearDaysStore
 // -----------------------------------------------------------------------------
 
 import { create } from 'zustand';
-import { toLogicalDateStr } from '../utils/dateUtils';
 
 const STORAGE_KEY = 'glim-symptom-days';
 
@@ -46,12 +63,13 @@ function saveDays(state) {
   } catch { /* ignore */ }
 }
 
-// Does an open episode cover this logical day? An open episode runs from its
-// onset date up to now, so it contradicts a clear day on any date at or after
-// its onset. Closed episodes are ignored here: they are already represented by
-// log entries, and the caller's rule-2 unmark handles the day they fall on.
-function coveredByOpenEpisode(dateString, openEpisodes) {
-  return openEpisodes.some(e => e.date <= dateString);
+// How many symptoms the caller says are present on the day. Accepts the Set
+// that getAffectedDays(date, date).get(date) yields, or an array, or nothing.
+function affectedCount(affected) {
+  if (!affected) return 0;
+  if (affected instanceof Set) return affected.size;
+  if (Array.isArray(affected)) return affected.length;
+  return 0;
 }
 
 // --- Store ---
@@ -66,20 +84,30 @@ export const useSymptomClearDaysStore = create((set, get) => ({
   // Records "nothing today" for a logical date. Retroactive marking of a past day
   // is allowed, so gaps in the record can be filled in later.
   //
-  // REFUSES while an episode is open, because "nothing today" and "this symptom
-  // is still going" are contradictory claims about the same day; the caller
-  // should offer to close the episode instead. openEpisodes is passed IN by the
-  // panel from useSymptomsStore.getOpenEpisodes() - this store never reads that
-  // one (stores never import each other; the panel orchestrates), the same
-  // composition the library store's getActiveItems(recencyById) uses.
+  // REFUSES when any symptom is present on the day: "nothing today" and "a
+  // symptom was logged today" are contradictory claims. The caller passes IN
+  // the day's affected set from useSymptomsStore.getAffectedDays(date, date) -
+  // this store never reads that one (stores never import each other; the panel
+  // orchestrates), the same composition the library store's
+  // getActiveItems(recencyById) uses. Using the affected-days primitive rather
+  // than "is an episode open" means a CLOSED episode that spanned the day, or a
+  // moment logged on it, refuses too; the earlier open-episode check let a
+  // retroactive clear day land inside a closed multi-day flare.
   //
   // Returns { ok: true, day } or { ok: false, error }.
-  markClear: (dateString, openEpisodes = []) => {
+  markClear: (dateString, affectedSymptomIds) => {
     if (typeof dateString !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
       return { ok: false, error: 'invalid date' };
     }
-    if (coveredByOpenEpisode(dateString, openEpisodes)) {
-      return { ok: false, error: 'an episode is still going' };
+    // REQUIRED, and must be the Set (or an array) the caller got from the
+    // symptoms store. A permissive default would let a caller that forgot the
+    // argument - or passed the whole Map by mistake - mark an affected day
+    // clear without a sound.
+    if (!(affectedSymptomIds instanceof Set) && !Array.isArray(affectedSymptomIds)) {
+      return { ok: false, error: 'affected set required' };
+    }
+    if (affectedCount(affectedSymptomIds) > 0) {
+      return { ok: false, error: 'symptoms are logged for this day' };
     }
 
     const now = new Date().toISOString();
@@ -104,18 +132,31 @@ export const useSymptomClearDaysStore = create((set, get) => ({
     return { ok: true, day };
   },
 
-  // Soft delete, per the domain-wide rule: hard deletion would let a sync pull
-  // re-introduce the record. Called directly by the panel whenever a symptom is
-  // logged - a clear day and a logged symptom are mutually exclusive claims, and
-  // the log wins.
+  // Records that the day is NOT clear. Called by the panel on every entry write
+  // (log, log-again, and an edit that lands the entry on a day), keyed on the
+  // entry's date - a clear day and a logged symptom are mutually exclusive
+  // claims, and the log wins.
+  //
+  // ALWAYS WRITES, even when no row exists locally (D4). Without a row here,
+  // this device cannot know whether another device has marked the day clear
+  // and simply not synced yet; a no-op would let that mark arrive later and sit
+  // beside the entry. So a missing row gets a TOMBSTONE (a soft-deleted row
+  // stamped now), and an existing row - deleted or not - has its updatedAt
+  // bumped, so this device's "not clear" claim carries the newest timestamp and
+  // wins the merge against any mark made before it. Cost: one small row per
+  // logged day, and one push per sync while logging continues. Soft delete
+  // throughout, per the domain-wide rule.
   unmarkClear: (dateString) => {
     const now = new Date().toISOString();
     set(state => {
+      const existing = state.days.find(d => d.id === dateString);
       const next = {
         ...state,
-        days: state.days.map(d =>
-          d.id === dateString && !d.deletedAt ? { ...d, deletedAt: now, updatedAt: now } : d
-        ),
+        days: existing
+          ? state.days.map(d => (d.id === dateString
+              ? { ...d, deletedAt: d.deletedAt ?? now, updatedAt: now }
+              : d))
+          : [...state.days, { id: dateString, status: 'none', recordedAt: now, updatedAt: now, deletedAt: now }],
       };
       saveDays(next);
       return next;
@@ -145,6 +186,4 @@ export const useSymptomClearDaysStore = create((set, get) => ({
       .map(d => d.id)
       .sort(),
 
-  // Convenience for the reminder check, which works from a Date.
-  isClearOn: (date) => get().isClear(toLogicalDateStr(date)),
 }));

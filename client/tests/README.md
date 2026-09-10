@@ -89,9 +89,10 @@ node --import ./tests/register-hooks.mjs tests/symptoms_phase15.test.mjs
   `updatedAt` on one side loses to the well-formed side rather than freezing the
   row; a write-once re-push (`flushSync` then `syncNutritionLogs`) never clears
   a soft-delete recorded in between; a null element in a local array is
-  skipped rather than fatal; and (Y15) a journal soft-delete now propagates to a
+  skipped rather than fatal; (Y15) a journal soft-delete now propagates to a
   device that already holds the entry, which `syncJournal` never did before the
-  water pull branch was ported on 2026-09-08.
+  water pull branch was ported on 2026-09-08; and (Y16) a clear-day mark that
+  has not yet synced loses to the tombstone the log laid on the other device.
 - `firestore_rules.test.mjs` - static-structure test for `firestore.rules`.
   Locks the property that made the first draft of the monotonicity backstop a
   no-op: Firestore grants a request if ANY matching allow is true, so a
@@ -105,9 +106,16 @@ node --import ./tests/register-hooks.mjs tests/symptoms_phase15.test.mjs
   destroy the "not rated" vs "rated 0" distinction permanently, on every device);
   categories as entities, with fixed seed ids stable across re-initialisation and
   an idempotent legacy `category` -> `categoryId` migration; clear-day records,
-  refused while an episode is open and soft-deleted when a symptom is logged; and
+  refused while any symptom is present on the day (open or closed episode, or a
+  moment), soft-deleted when a symptom is logged, tombstoned when no row exists
+  locally so an unsynced mark cannot outlive the log (D4), and unmarked on the
+  entry's RESULTING date when an edit moves it (D3); and
   the `useSettingsStore` enumerated-fields gotcha, where a field added to only
-  `loadSettings` or only `saveSettings` is silently dropped on every write.
+  `loadSettings` or only `saveSettings` is silently dropped on every write; and
+  the end-of-day reminder's decisions (`utils/symptomReminder.js`): the gate's
+  truth table, the moot check, and the load-bearing rule that a refused "yes"
+  never stamps the day, with static guards that `DesktopPet` routes every
+  answer through the decision function and writes the stamp in one place.
 
 - `register-hooks.mjs` / `resolve-extensionless.mjs` - test-only Node ESM resolve
   hook that appends `.js` to extensionless relative imports so the source modules

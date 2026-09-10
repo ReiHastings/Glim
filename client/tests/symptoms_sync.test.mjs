@@ -41,6 +41,11 @@
 //          entry (the water pull branch, ported 2026-09-08; syncJournal never
 //          had it), and a newer local deletedAt is not overwritten by an older
 //          remote one.
+//    Y16 - D4, the SYNC half: a clear-day mark made on device A that has not
+//          yet reached device B loses to B's newer tombstone row, and both
+//          devices converge on "not clear". The tombstone is seeded directly;
+//          that the store LAYS it on unmarkClear is covered in
+//          symptoms_phase15 (D4 block), not here.
 //   The real browser/auth paths still require a manual pass.
 //
 // usage:
@@ -596,6 +601,28 @@ check('Y15: the row is retained (soft, not hard, delete)',
 await syncJournal('J');
 check('Y15: a newer local deletedAt survives a pull carrying an older one',
   JSON.parse(jB.get('glim-journal')).find(e => e.id === 'j1').deletedAt === ago(10));
+
+// ===== Y16: D4 - a not-yet-synced clear-day mark loses to the log's tombstone =====
+FS.__reset();
+const dA = new Map(), dB = new Map();
+const DD = '2026-09-05';
+mem = dA;
+setDays([{ id: DD, status: 'none', recordedAt: ago(100), updatedAt: ago(100), deletedAt: null }]);
+await syncSymptomClearDays('D4');                              // A's mark is on the server
+// B has never seen the mark. B logs a symptom on that day; the panel calls
+// unmarkClear, which (D4) lays a tombstone even with no local row.
+mem = dB;
+setDays([{ id: DD, status: 'none', recordedAt: ago(50), updatedAt: ago(50), deletedAt: ago(50) }]);
+await syncSymptomClearDays('D4');                              // B pulls A's older mark, keeps its tombstone, pushes it
+check('Y16: B keeps its tombstone against the older remote mark',
+  !!getDays().find(d => d.id === DD).deletedAt);
+check('Y16: the tombstone reached the server', !!FS.__get(`users/D4/symptom-days/${DD}`).deletedAt);
+mem = dA; await syncSymptomClearDays('D4');
+check('Y16: A adopts the tombstone - the day is not clear anywhere',
+  !!getDays().find(d => d.id === DD).deletedAt);
+check('Y16: still exactly one row per day on both devices',
+  JSON.parse(dA.get('glim-symptom-days')).days.length === 1 &&
+  JSON.parse(dB.get('glim-symptom-days')).days.length === 1);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
