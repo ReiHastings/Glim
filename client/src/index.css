@@ -49,3 +49,15 @@
 /* Dark background on html fills the notch/status bar area on iPhone */
 html { background-color: #08081a; min-height: calc(100% + env(safe-area-inset-top)); }
 html, body, #root { width: 100%; height: 100%; overflow: hidden; }
+
+/* iOS Safari zooms the whole page whenever a focused form field renders under
+   16px, inside a home-screen app as well as in the browser. Most of Glim's
+   fields size themselves with --glim-text-xs (15px) or --glim-text-2xs (13px),
+   so every one of them triggered it. Touch screens only, so desktop keeps the
+   smaller fields; pinch zoom is untouched. !important is required here: every
+   field sets its font size inline, and inline wins over a stylesheet rule
+   otherwise. Range sliders are excluded because focus on them never zooms and
+   the size would only affect the (hidden) native track text. */
+@media (pointer: coarse) {
+  input:not([type="range"]), textarea, select { font-size: 16px !important; }
+}
