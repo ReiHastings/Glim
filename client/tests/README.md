@@ -39,6 +39,14 @@ node tests/firestore_rules.test.mjs
 # Symptom diary Phase 1.5: intensity null policy, categories as entities and the
 # legacy migration, clear-day records, and the settings round trip
 node --import ./tests/register-hooks.mjs tests/symptoms_phase15.test.mjs
+
+# In-flight run guard: real startSync/stopSync/syncAll/flushSync against the
+# mock with one awaited call held open; a run that outlives its session must
+# write nothing (R1-R8)
+node --import ./tests/register-sync-mocks.mjs tests/sync_stale_run.test.mjs
+
+# Static: every sync function captures and checks the run-generation counter
+node --import ./tests/register-hooks.mjs tests/sync_generation_guard.test.mjs
 ```
 
 ## Files
@@ -116,6 +124,24 @@ node --import ./tests/register-hooks.mjs tests/symptoms_phase15.test.mjs
   truth table, the moot check, and the load-bearing rule that a refused "yes"
   never stamps the day, with static guards that `DesktopPet` routes every
   answer through the decision function and writes the stamp in one place.
+- `sync_stale_run.test.mjs` - acceptance test for the run-generation guard
+  (Decision Register 2026-09-10). Uses only the public API, so it is indifferent
+  to how the guard is implemented. Holds one awaited mock call open, ends the
+  session, releases, and asserts no `localSet`, no `notify`, no `setDoc`:
+  stale mutable run (R1), the live-B variant where B's next sync must not push
+  A's rows (R1b), the live control (R2), a stale write-once run (R3), a stop
+  between two pushes of one run (R4: the dispatched write lands, the next does
+  not), singletons via the doc-read gate (R5), two overlapping live runs are
+  not discarded (R6), `flushSync` with its first push held across an account
+  switch (R7, the code-review finding), and same-user re-sign-in (R8).
+- `sync_generation_guard.test.mjs` - static presence test: every `async
+  function sync*`, `pushEntries` and `flushSync` in `sync.js` has
+  `const gen = generation` as its first statement and at least one
+  `stale(gen, ...)`; `startSync`/`stopSync` bump; the exempt `syncAll` holds no
+  write and the five one-line wrappers really delegate. Deliberately not a
+  per-await count (satisfiable by a misplaced guard); placement is covered by
+  `sync_stale_run` and by the `staleSkips() === 0` checks at the end of
+  `sync_scenarios` and `symptoms_sync`.
 
 - `register-hooks.mjs` / `resolve-extensionless.mjs` - test-only Node ESM resolve
   hook that appends `.js` to extensionless relative imports so the source modules
@@ -125,6 +151,9 @@ node --import ./tests/register-hooks.mjs tests/symptoms_phase15.test.mjs
   in-memory mocks, so the real sync code runs with a fake backend. The Firestore
   mock exposes `__setWriteHook(fn)`, called as `fn(path, prev, next)` before
   every `setDoc` lands, so a test can observe each write or make one fail by
-  throwing. Not application code.
+  throwing; and three gates, `__setReadGate` (`getDocs`), `__setDocReadGate`
+  (`getDoc`) and `__setWriteGate` (`setDoc`), each called with the path and
+  awaited when it returns a promise, so a test can hold a call open mid-run.
+  `__clearHooks()` resets all four. Not application code.
 
 `/verify` reports WARNING for the missing runner-based suite until vitest is adopted.
