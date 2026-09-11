@@ -98,5 +98,10 @@ check('S6: local adopts remote goal (not default 6)', wb.goal === 9);
 check('S6: local adopts remote bottleOz (not default 24)', wb.bottleOz === 32);
 check('S6: remote config not clobbered by the default', FS.__get('users/B/water-config/current').goal === 9);
 
+// The run-generation guard (Decision Register 2026-09-10) must never fire on a
+// live session. These scenarios never call startSync/stopSync, so a skip here
+// means a domain function captured its generation AFTER an await.
+check('no stale-run skips across the suite', sync.__test.staleSkips() === 0);
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

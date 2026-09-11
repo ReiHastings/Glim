@@ -3,7 +3,7 @@
 // Project:     Glim
 // Author:      Reina Hastings (reinahastings13@gmail.com)
 // Created:     2026-03-26
-// Last Modified: 2026-09-08
+// Last Modified: 2026-09-10
 // Purpose:     Background sync service. Pushes localStorage data to Firestore
 //              and pulls remote changes back into localStorage so data stays
 //              in sync across devices. localStorage remains the primary
@@ -38,6 +38,13 @@
 //              browser, so the honest bound on "next syncAll" for a
 //              backgrounded tab is "when it is next foregrounded".
 //
+//              A run that is still in flight when the session ends (stopSync,
+//              or startSync for another account) must not write: see the
+//              run-generation counter below. Every domain function, both
+//              shared helpers, and flushSync capture the generation first and
+//              check it before each post-await write. Decision Register
+//              2026-09-10.
+//
 //              After a pull that changes localStorage, fires a
 //              'glim-data-updated' CustomEvent so DesktopPet can reload.
 //
@@ -59,6 +66,28 @@ import {
 let syncInterval = null;
 let visibilityHandler = null;
 let currentUid = null;
+
+// Identifies the current sync session. Bumped by startSync and stopSync, so a
+// run that captured an older value belongs to a session that has ended or been
+// replaced and must not write: a slow read can resolve after the account
+// changed, and its localSet would put the previous user's rows into the next
+// user's localStorage (from where the next sync pushes them under the new uid).
+// Every domain function captures `const gen = generation` as its FIRST
+// statement and checks stale(gen) before every write that follows an await.
+let generation = 0;
+
+// Count of writes skipped because the session ended mid-run. Exposed to tests,
+// which assert it stays 0 across a live session.
+let staleSkips = 0;
+
+// True when the session `gen` was captured under has ended. Returning (not
+// throwing) is the caller's job: a stale run is not an error.
+function stale(gen, what) {
+  if (gen === generation) return false;
+  staleSkips++;
+  console.info(`[glim sync] ${what}: session ended mid-run, discarding`);
+  return true;
+}
 
 // --- localStorage helpers ---
 
@@ -106,9 +135,9 @@ const RETIRED_META_KEYS = [
 
 function pruneStaleSyncMeta() {
   const meta  = getSyncMeta();
-  const stale = RETIRED_META_KEYS.filter(k => k in meta);
-  if (stale.length === 0) return;
-  for (const k of stale) delete meta[k];
+  const retired = RETIRED_META_KEYS.filter(k => k in meta);
+  if (retired.length === 0) return;
+  for (const k of retired) delete meta[k];
   localSet('glim-sync-meta', meta);
 }
 
@@ -202,9 +231,11 @@ function nutritionLogNeedsPush(e, last) {
 }
 
 async function pushEntries(uid, collectionName, list, lastPushedAt, needsPush) {
+  const gen = generation;
   const ref = collection(db, 'users', uid, collectionName);
   const toPush = list.filter(e => needsPush(e, lastPushedAt));
   for (const entry of toPush) {
+    if (stale(gen, collectionName)) return;   // each iteration awaits
     try {
       await setDoc(doc(ref, String(entry.id)), writeOncePayload(entry), { merge: true });
     } catch (e) {
@@ -223,6 +254,7 @@ async function pushEntries(uid, collectionName, list, lastPushedAt, needsPush) {
 // =============================================================================
 
 async function syncJournal(uid) {
+  const gen = generation;
   const meta = getSyncMeta();
   const lastPushedAt = meta.journalPushedAt ? new Date(meta.journalPushedAt) : new Date(0);
 
@@ -235,6 +267,7 @@ async function syncJournal(uid) {
   const toPush = entries.filter(e => journalNeedsPush(e, lastPushedAt));
 
   for (const entry of toPush) {
+    if (stale(gen, 'journal')) return;
     try {
       await setDoc(doc(journalRef, String(entry.id)), writeOncePayload(entry), { merge: true });
     } catch (e) {
@@ -271,6 +304,7 @@ async function syncJournal(uid) {
     }
   });
 
+  if (stale(gen, 'journal')) return;
   if (toAdd.length > 0 || updated) {
     const merged = [...entries, ...toAdd].sort(
       (a, b) => new Date(b.createdAt || b.date || 0) - new Date(a.createdAt || a.date || 0)
@@ -292,6 +326,7 @@ async function syncJournal(uid) {
 // =============================================================================
 
 async function syncPokes(uid) {
+  const gen = generation;
   const localRaw = localStorage.getItem('glim-pokes');
   const localTotal = localRaw ? (parseInt(localRaw, 10) || 0) : 0;
 
@@ -300,6 +335,7 @@ async function syncPokes(uid) {
   try {
     const snap = await getDoc(pokesRef);
     const remoteTotal = snap.exists() ? (snap.data().total ?? 0) : 0;
+    if (stale(gen, 'pokes')) return;
 
     if (localTotal >= remoteTotal) {
       // Local has more pokes (or same): push to Firestore
@@ -324,6 +360,7 @@ async function syncPokes(uid) {
 // =============================================================================
 
 async function syncSettings(uid) {
+  const gen = generation;
   let localSettings = null;
   try {
     const val = localStorage.getItem('glim-settings');
@@ -335,6 +372,7 @@ async function syncSettings(uid) {
   try {
     const snap = await getDoc(settingsRef);
     const remoteSettings = snap.exists() ? snap.data() : null;
+    if (stale(gen, 'settings')) return;
 
     const localTime = localSettings?.lastModified ? new Date(localSettings.lastModified) : new Date(0);
     const remoteTime = remoteSettings?.lastModified ? new Date(remoteSettings.lastModified) : new Date(0);
@@ -366,6 +404,7 @@ async function syncSettings(uid) {
 // =============================================================================
 
 async function syncWater(uid) {
+  const gen          = generation;
   const meta         = getSyncMeta();
   const lastPushedAt = meta.waterPushedAt ? new Date(meta.waterPushedAt) : new Date(0);
 
@@ -384,6 +423,7 @@ async function syncWater(uid) {
   const toPush = entries.filter(e => waterEntryNeedsPush(e, lastPushedAt));
 
   for (const entry of toPush) {
+    if (stale(gen, 'water')) return;
     try {
       await setDoc(doc(entriesRef, String(entry.id)), writeOncePayload(entry), { merge: true });
     } catch (e) {
@@ -430,6 +470,7 @@ async function syncWater(uid) {
   try {
     const configSnap   = await getDoc(configRef);
     const remoteConfig = configSnap.exists() ? configSnap.data() : null;
+    if (stale(gen, 'water')) return;
     const localTime    = localConfig.configUpdatedAt ? new Date(localConfig.configUpdatedAt) : new Date(0);
     const remoteTime   = remoteConfig?.configUpdatedAt ? new Date(remoteConfig.configUpdatedAt) : new Date(0);
 
@@ -443,6 +484,8 @@ async function syncWater(uid) {
     console.warn('[glim sync] water config sync failed:', e);
   }
 
+  // Reached after the config getDoc even when that read failed and was caught.
+  if (stale(gen, 'water')) return;
   if (changed) {
     localSet('glim-water', local);
     notify(['water']);
@@ -452,6 +495,7 @@ async function syncWater(uid) {
   // A device that only pulled remote entries would otherwise keep lastPushedAt
   // at epoch and re-push all pulled entries on the next cycle.
   setSyncMeta({ waterPushedAt: new Date().toISOString() });
+
 }
 
 // =============================================================================
@@ -467,6 +511,7 @@ async function syncWater(uid) {
 // =============================================================================
 
 async function syncSteps(uid) {
+  const gen          = generation;
   const meta         = getSyncMeta();
   const lastPushedAt = meta.stepsPushedAt ? new Date(meta.stepsPushedAt) : new Date(0);
 
@@ -485,6 +530,7 @@ async function syncSteps(uid) {
   const toPush = entries.filter(e => stepsEntryNeedsPush(e, lastPushedAt));
 
   for (const entry of toPush) {
+    if (stale(gen, 'steps')) return;
     try {
       await setDoc(doc(entriesRef, String(entry.id)), writeOncePayload(entry), { merge: true });
     } catch (e) {
@@ -501,6 +547,7 @@ async function syncSteps(uid) {
     return;
   }
 
+  if (stale(gen, 'steps')) return;
   const localIdSet = new Set(entries.map(e => String(e.id)));
   const toAdd = [];
   snapshot.forEach(d => {
@@ -510,7 +557,7 @@ async function syncSteps(uid) {
   if (toAdd.length > 0) {
     const merged = [...entries, ...toAdd].sort((a, b) => a.timestamp - b.timestamp);
     local = { ...local, entries: merged };
-    localStorage.setItem('glim-steps', JSON.stringify(local));
+    localSet('glim-steps', local);
     notify(['steps']);
   }
 
@@ -529,6 +576,7 @@ async function syncSteps(uid) {
 // =============================================================================
 
 async function syncStepsConfig(uid) {
+  const gen = generation;
   let local;
   try {
     const raw = localStorage.getItem('glim-steps');
@@ -547,6 +595,7 @@ async function syncStepsConfig(uid) {
   try {
     const snap         = await getDoc(configRef);
     const remoteConfig = snap.exists() ? snap.data() : null;
+    if (stale(gen, 'steps-config')) return;
     const localTime    = new Date(localConfig.configUpdatedAt);
     const remoteTime   = remoteConfig?.configUpdatedAt ? new Date(remoteConfig.configUpdatedAt) : new Date(0);
 
@@ -573,6 +622,7 @@ async function syncStepsConfig(uid) {
 // =============================================================================
 
 async function syncNutritionLogs(uid) {
+  const gen          = generation;
   const meta         = getSyncMeta();
   const lastPushedAt = meta.nutritionPushedAt ? new Date(meta.nutritionPushedAt) : new Date(0);
 
@@ -591,6 +641,7 @@ async function syncNutritionLogs(uid) {
   const toPush = logs.filter(e => nutritionLogNeedsPush(e, lastPushedAt));
 
   for (const entry of toPush) {
+    if (stale(gen, 'nutrition')) return;
     try {
       await setDoc(doc(logsRef, String(entry.id)), writeOncePayload(entry), { merge: true });
     } catch (e) {
@@ -607,6 +658,7 @@ async function syncNutritionLogs(uid) {
     return;
   }
 
+  if (stale(gen, 'nutrition')) return;
   const localById = new Map(logs.map(e => [String(e.id), e]));
   const toAdd     = [];
   let updated     = false;
@@ -642,6 +694,7 @@ async function syncNutritionLogs(uid) {
 // =============================================================================
 
 async function syncNutritionConfig(uid) {
+  const gen = generation;
   let local;
   try {
     const raw = localStorage.getItem('glim-nutrition');
@@ -658,6 +711,7 @@ async function syncNutritionConfig(uid) {
   try {
     const snap         = await getDoc(configRef);
     const remoteConfig = snap.exists() ? snap.data() : null;
+    if (stale(gen, 'nutrition-config')) return;
     const localTime    = new Date(localConfigUpdatedAt);
     const remoteTime   = remoteConfig?.configUpdatedAt ? new Date(remoteConfig.configUpdatedAt) : new Date(0);
 
@@ -763,6 +817,7 @@ async function syncNutritionLibrary(uid) {
 // =============================================================================
 
 async function syncUpdatedAtCollection(uid, { storageKey, arrayField, collectionName, domain }) {
+  const gen = generation;
   let local;
   try {
     const raw = localStorage.getItem(storageKey);
@@ -794,6 +849,7 @@ async function syncUpdatedAtCollection(uid, { storageKey, arrayField, collection
     return;
   }
 
+  if (stale(gen, collectionName)) return;
   const remoteById = new Map();
   snapshot.forEach(d => remoteById.set(d.id, d.data()));
 
@@ -831,6 +887,7 @@ async function syncUpdatedAtCollection(uid, { storageKey, arrayField, collection
   for (const entry of finalDocs) {
     const remote = remoteById.get(String(entry.id));
     if (remote && !beats(entry.updatedAt, remote.updatedAt)) continue;
+    if (stale(gen, collectionName)) return;   // each iteration awaits
     try {
       await setDoc(doc(docsRef, String(entry.id)), entry, { merge: true });
     } catch (e) {
@@ -939,6 +996,7 @@ export async function syncAll(uid = currentUid) {
 // =============================================================================
 
 export async function flushSync(uid = currentUid) {
+  const gen = generation;
   if (!uid) return;
   const meta = getSyncMeta();
   const at   = (v) => (v ? new Date(v) : new Date(0));
@@ -948,14 +1006,17 @@ export async function flushSync(uid = currentUid) {
     await pushEntries(uid, 'journal',
       Array.isArray(journal) ? journal : [], at(meta.journalPushedAt), journalNeedsPush);
 
+    if (stale(gen, 'flush')) return;   // the previous pushEntries awaited
     const water = localGet('glim-water');
     await pushEntries(uid, 'water',
       Array.isArray(water?.entries) ? water.entries : [], at(meta.waterPushedAt), waterEntryNeedsPush);
 
+    if (stale(gen, 'flush')) return;   // the previous pushEntries awaited
     const steps = localGet('glim-steps');
     await pushEntries(uid, 'steps',
       Array.isArray(steps?.entries) ? steps.entries : [], at(meta.stepsPushedAt), stepsEntryNeedsPush);
 
+    if (stale(gen, 'flush')) return;   // the previous pushEntries awaited
     const nutrition = localGet('glim-nutrition');
     await pushEntries(uid, 'nutrition',
       Array.isArray(nutrition?.logs) ? nutrition.logs : [], at(meta.nutritionPushedAt), nutritionLogNeedsPush);
@@ -974,6 +1035,7 @@ export function startSync(uid) {
   // second 60s timer and a second visibility handler running.
   stopSync();
   currentUid = uid;
+  generation++;          // stopSync above bumped too; a second bump is harmless
   pruneStaleSyncMeta();
 
   // Sync immediately on app load to pull cross-device data
@@ -993,6 +1055,7 @@ export function startSync(uid) {
 
 export function stopSync() {
   currentUid = null;
+  generation++;          // any run still in flight now fails its stale() checks
   if (syncInterval) {
     clearInterval(syncInterval);
     syncInterval = null;
@@ -1010,4 +1073,6 @@ export const __test = {
   syncWater, syncSymptoms, syncSymptomsLibrary,
   syncSymptomsCategories, syncSymptomClearDays, syncNutritionLibrary,
   syncNutritionLogs, syncJournal, pruneStaleSyncMeta, writeOncePayload, beats,
+  generation: () => generation,
+  staleSkips: () => staleSkips,
 };

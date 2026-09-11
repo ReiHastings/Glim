@@ -624,5 +624,10 @@ check('Y16: still exactly one row per day on both devices',
   JSON.parse(dA.get('glim-symptom-days')).days.length === 1 &&
   JSON.parse(dB.get('glim-symptom-days')).days.length === 1);
 
+// The run-generation guard (Decision Register 2026-09-10) must never fire on a
+// live session. These scenarios never call startSync/stopSync, so a skip here
+// means a domain function captured its generation AFTER an await.
+check('no stale-run skips across the suite', sync.__test.staleSkips() === 0);
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
