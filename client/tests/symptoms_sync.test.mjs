@@ -32,7 +32,7 @@
 //    Y12 - a MALFORMED updatedAt on one side loses to the well-formed side in
 //          both directions, so a corrupt row is healed rather than frozen; two
 //          malformed stamps tie and nothing moves.
-//    Y13 - a WRITE-ONCE re-push (flushSync, then syncNutritionLogs) never clears
+//    Y13 - a WRITE-ONCE re-push (flushWriteOnce, then syncNutritionLogs) never clears
 //          a soft-delete another device recorded in between: the null deletedAt
 //          is omitted from the payload, so merge cannot overwrite it.
 //    Y14 - a null element in a local array is skipped with a warning; the good
@@ -72,7 +72,7 @@ const {
   syncSymptoms, syncSymptomsLibrary, syncSymptomsCategories, syncSymptomClearDays,
   syncNutritionLibrary, syncNutritionLogs, syncJournal, pruneStaleSyncMeta, writeOncePayload, beats,
 } = sync.__test;
-const { flushSync } = sync;
+const { flushWriteOnce } = sync;
 
 let passed = 0, failed = 0;
 function check(name, cond) {
@@ -507,7 +507,7 @@ check('Y12: two malformed stamps tie - no write, no adoption (documented)',
 // ===== Y13: a write-once re-push never clears a soft-delete =====
 //
 // Nutrition logs are created with an explicit `deletedAt: null`. Timeline:
-//   phone logs an entry; tab hides; flushSync pushes it (watermark NOT advanced,
+//   phone logs an entry; tab hides; flushWriteOnce pushes it (watermark NOT advanced,
 //   by design). Laptop pulls it, undoes it (deletedAt = T), pushes. Phone
 //   foregrounds; syncNutritionLogs re-pushes the row because createdAt is still
 //   newer than its watermark. With merge:true and a literal null, that write
@@ -534,7 +534,7 @@ FS.__setWriteHook((path, prev, next) => {
 });
 
 mem = phoneN; phoneN.set('glim-nutrition', JSON.stringify({ logs: [nLog()] }));
-await flushSync('N');                                       // tab-hide push, no watermark advance
+await flushWriteOnce('N');                                  // tab-hide push, no watermark advance
 check('Y13: the flushed row carries NO deletedAt key on the server',
   FS.__has('users/N/nutrition/n1') && !('deletedAt' in FS.__get('users/N/nutrition/n1')));
 

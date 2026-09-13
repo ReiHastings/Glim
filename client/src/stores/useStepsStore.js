@@ -15,6 +15,7 @@
 // -----------------------------------------------------------------------------
 
 import { create } from 'zustand';
+import { notifyLocalWrite, DOMAINS } from '../syncBus';
 import { todayStr, dateStr, toLogicalDateStr } from '../utils/dateUtils';
 
 // Re-export so existing consumers (StepsPanel) don't break
@@ -55,6 +56,7 @@ function saveSteps(state) {
       goal: state.goal,
       configUpdatedAt: state.configUpdatedAt,
     }));
+    notifyLocalWrite(DOMAINS.STEPS);
   } catch { /* ignore */ }
 }
 

@@ -47,11 +47,21 @@ node --import ./tests/register-sync-mocks.mjs tests/sync_stale_run.test.mjs
 
 # Static: every sync function captures and checks the run-generation counter
 node --import ./tests/register-hooks.mjs tests/sync_generation_guard.test.mjs
+
+# Event-triggered scheduler (2026-09-10): idle runs push nothing, local writes
+# and the remote signal document schedule debounced runs, own signal ignored,
+# double startSync leaves one listener, flushSync waits for a run in flight
+node --import ./tests/register-sync-mocks.mjs tests/sync_scheduler.test.mjs
+
+# Static: every persisting store announces its write on syncBus with a DOMAINS
+# member; syncBus imports nothing from Firebase; no store imports sync/firebase
+node tests/syncbus_wiring.test.mjs
 ```
 
 ## Files
 
-- `flushsync_scope.test.mjs` - locks the CRITICAL invariant that `flushSync()`
+- `flushsync_scope.test.mjs` - locks the CRITICAL invariant that
+  `flushWriteOnce()` (the tab-hide push, named `flushSync` until 2026-09-10)
   pushes ONLY the four WRITE-ONCE entry logs (journal, water, steps, nutrition)
   and never a mutable id-keyed domain, a last-write-wins config doc, or the
   pokes counter. Being id-keyed is not what makes a blind push safe; write-once
@@ -135,13 +145,49 @@ node --import ./tests/register-hooks.mjs tests/sync_generation_guard.test.mjs
   not discarded (R6), `flushSync` with its first push held across an account
   switch (R7, the code-review finding), and same-user re-sign-in (R8).
 - `sync_generation_guard.test.mjs` - static presence test: every `async
-  function sync*`, `pushEntries` and `flushSync` in `sync.js` has
+  function sync*`, `pushEntries` and `flushWriteOnce` in `sync.js` has
   `const gen = generation` as its first statement and at least one
   `stale(gen, ...)`; `startSync`/`stopSync` bump; the exempt `syncAll` holds no
   write and the five one-line wrappers really delegate. Deliberately not a
   per-await count (satisfiable by a misplaced guard); placement is covered by
   `sync_stale_run` and by the `staleSkips() === 0` checks at the end of
-  `sync_scenarios` and `symptoms_sync`.
+  `sync_scenarios` and `symptoms_sync`. Since 2026-09-10 also asserts the
+  scheduler's `flushSync` is write-free (it only waits and delegates to
+  `runSync`) and that `touchSignal` checks the run generation before writing;
+  since 2026-09-12 that neither `touchSignal` nor `watchSignal` references
+  `Date` and that the signal is written with `serverTimestamp()`.
+- `sync_scheduler.test.mjs` - behavioural tests for the event-triggered
+  scheduler (2026-09-10) against the mock: P0, the Part 2.0 precondition, an
+  idle steady-state run reports `docsPushed: 0` on all 13 domains and performs
+  no Firestore write, signal document included (with `>=` singleton pushes two
+  open devices would wake each other forever); P0n negative control (a real
+  poke pushes once, touches the signal once, and the next idle run is silent);
+  L1 a burst of local writes collapses to one debounced run; S1-S3 a foreign
+  signal schedules a run, the device's own does not, the baseline snapshot does
+  not; R1-R2 double `startSync` leaves one listener, one subscription and six
+  handles, an account switch moves the listener, `stopSync` drains all; F1-F2
+  `flushSync` waits for a held run and requests during a run coalesce into one
+  follow-up; C1 an account switch mid-run. Uses `__test.setTimings` (20 ms
+  debounce) and the mock's `onSnapshot` / `__listenerCount`. Since 2026-09-12
+  the signal's `at` is server-assigned: S4 stubs the `Date` CONSTRUCTOR 5 min
+  ahead (not just `Date.now`, which `new Date()` ignores), sets the mock server
+  clock to real time, pushes, and asserts a foreign server-stamped signal wakes
+  this device exactly once (negative control, a client string stamp, verified
+  red by hand); S5 re-delivery schedules nothing; S6 the own optimistic echo
+  (pending, `at` null) schedules nothing; S6b attach while a write is in
+  flight, so the FIRST snapshot is pending: it must not become the baseline
+  and must not schedule (the only sequence that gives the pending check its
+  own teeth, since an own echo is also caught by the device-id check; code
+  review 2026-09-12); P0n asserts the stored stamp through `__signalStamp`,
+  since `__get` returns the `{ __ts }` storage form. S1 and S2 write their
+  signals with `serverTimestamp()` like the code does.
+- `syncbus_wiring.test.mjs` - static guard for the local-write trigger: a
+  store that persists without `notifyLocalWrite` reaches Firestore only on
+  focus or the 15-minute fallback, so every persisting store must import
+  `syncBus`, announce with a `DOMAINS` member inside its save function, and
+  never with a literal; `syncBus.js` imports nothing from Firebase; no store
+  imports `sync.js` or `firebase.js`; `sync.js` records under exactly the
+  `DOMAINS` strings.
 
 - `register-hooks.mjs` / `resolve-extensionless.mjs` - test-only Node ESM resolve
   hook that appends `.js` to extensionless relative imports so the source modules
@@ -154,6 +200,19 @@ node --import ./tests/register-hooks.mjs tests/sync_generation_guard.test.mjs
   throwing; and three gates, `__setReadGate` (`getDocs`), `__setDocReadGate`
   (`getDoc`) and `__setWriteGate` (`setDoc`), each called with the path and
   awaited when it returns a promise, so a test can hold a call open mid-run.
-  `__clearHooks()` resets all four. Not application code.
+  `__clearHooks()` resets all four. Since 2026-09-10 it also implements
+  single-document `onSnapshot` (baseline snapshot on a microtask, re-delivery
+  after every `setDoc` to the path, and `__listenerCount(path)`. Since 2026-09-12: `serverTimestamp()`
+  resolved at commit against a mock server clock that starts at REAL time
+  (captured once at load, so a `Date` stub cannot move it; a fixed far-future
+  clock would make every skew test vacuous) and advances 1 ms per stamp;
+  `MockTimestamp` with the SDK's zero-padded `valueOf`; an optimistic PENDING
+  echo built synchronously in `setDoc` (sentinels read as null,
+  `hasPendingWrites` true) delivered to every listener before the acknowledged
+  snapshot; `__setServerClock`, `__serverClock`, `__signalStamp(path)`,
+  `__redeliver(path)`, and `__setInitialPending(path)` (one-shot: the next
+  `onSnapshot` on that path delivers a pending snapshot with stamps nulled
+  before the acknowledged one, modelling attach-while-writing). Not
+  application code.
 
 `/verify` reports WARNING for the missing runner-based suite until vitest is adopted.

@@ -16,6 +16,7 @@
 // -----------------------------------------------------------------------------
 
 import { create } from 'zustand';
+import { notifyLocalWrite, DOMAINS } from '../syncBus';
 import { todayStr, toLogicalDateStr, logicalDayStart } from '../utils/dateUtils';
 
 const STORAGE_KEY = 'glim-symptoms';
@@ -40,6 +41,7 @@ function loadSymptoms() {
 function saveSymptoms(state) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ logs: state.logs }));
+    notifyLocalWrite(DOMAINS.SYMPTOMS);
   } catch { /* ignore */ }
 }
 

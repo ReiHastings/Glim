@@ -23,6 +23,7 @@
 // -----------------------------------------------------------------------------
 
 import { create } from 'zustand';
+import { notifyLocalWrite, DOMAINS } from '../syncBus';
 import { SEED_CATEGORIES, SEED_AT, UNCATEGORIZED_LABEL } from '../utils/symptomCategories';
 
 const STORAGE_KEY = 'glim-symptoms-categories';
@@ -67,6 +68,7 @@ function loadCategories() {
 function saveCategories(state) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ items: state.items }));
+    notifyLocalWrite(DOMAINS.SYMPTOM_CATEGORIES);
   } catch { /* ignore */ }
 }
 

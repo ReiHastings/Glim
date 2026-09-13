@@ -13,6 +13,7 @@
 // -----------------------------------------------------------------------------
 
 import { create } from 'zustand';
+import { notifyLocalWrite, DOMAINS } from '../syncBus';
 import { todayStr, toLogicalDateStr } from '../utils/dateUtils';
 
 const STORAGE_KEY = 'glim-nutrition';
@@ -45,6 +46,7 @@ function saveNutrition(state) {
       goals:           state.goals,
       configUpdatedAt: state.configUpdatedAt,
     }));
+    notifyLocalWrite(DOMAINS.NUTRITION);
   } catch { /* ignore */ }
 }
 

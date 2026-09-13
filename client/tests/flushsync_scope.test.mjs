@@ -5,8 +5,9 @@
 //
 // purpose:
 //   Static-analysis invariant test (no framework, no Firebase import) that locks
-//   the C1 guarantee: flushSync must push ONLY the four WRITE-ONCE entry-log
-//   domains (journal, water, steps, nutrition logs) and nothing else.
+//   the C1 guarantee: flushWriteOnce (the tab-hide push, named flushSync until
+//   2026-09-10) must push ONLY the four WRITE-ONCE entry-log domains (journal,
+//   water, steps, nutrition logs) and nothing else.
 //
 //   Two families are excluded, for two different reasons:
 //     - singletons (pokes, settings, *-config): take-the-max / last-write-wins
@@ -21,9 +22,10 @@
 //       to Phase 1.5 on the id-keyed argument, and this test previously
 //       asserted their presence. It now asserts their absence.
 //
-//   Also asserts: the mutable-domain sync pulls BEFORE it pushes; sign-out runs
-//   a full syncAll (which has the read) rather than flushSync; the
-//   flush-on-tab-hide wiring is present.
+//   Also asserts: the mutable-domain sync pulls BEFORE it pushes; sign-out
+//   awaits flushSync (the full run, which has the read) rather than
+//   flushWriteOnce; syncAll is private to the scheduler; the flush-on-tab-hide
+//   wiring is present.
 //
 //   Also guards the W1 UID-change fix: App.jsx must re-hydrate stores through
 //   reloadAllStores() and must never carry a hardcoded per-store reload list,
@@ -45,22 +47,24 @@ function check(name, cond) {
   else { failed++; console.error(`  FAIL ${name}`); }
 }
 
-// Isolate the flushSync function body (from its declaration to startSync).
-const start = src.indexOf('export async function flushSync(');
-check('flushSync is exported', start !== -1);
-const end = src.indexOf('export function startSync', start);
+// Isolate the flushWriteOnce function body (from its declaration to the
+// scheduler banner that follows it).
+const start = src.indexOf('export async function flushWriteOnce(');
+check('flushWriteOnce is exported', start !== -1);
+const end = src.indexOf('//  Scheduler: event-triggered runs', start);
+check('the scheduler banner follows flushWriteOnce (body isolation is bounded)', end !== -1);
 const body = src.slice(start, end === -1 ? undefined : end);
 
 // Must push each of the four WRITE-ONCE collections.
 const FLUSH_DOMAINS = ['journal', 'water', 'steps', 'nutrition'];
 for (const col of FLUSH_DOMAINS) {
-  check(`flushSync pushes '${col}'`, body.includes(`'${col}'`));
+  check(`flushWriteOnce pushes '${col}'`, body.includes(`'${col}'`));
 }
 
 // Must call pushEntries exactly once per write-once domain, and no more: an
 // extra call is the signal that something has crept into flush scope.
 const pushCount = (body.match(/pushEntries\(/g) || []).length;
-check(`flushSync calls pushEntries exactly ${FLUSH_DOMAINS.length} times`,
+check(`flushWriteOnce calls pushEntries exactly ${FLUSH_DOMAINS.length} times`,
   pushCount === FLUSH_DOMAINS.length);
 
 // Must NOT push any MUTABLE id-keyed domain. These are the collections whose
@@ -70,7 +74,7 @@ const MUTABLE_DOMAINS = [
   'nutrition-library', 'symptoms', 'symptoms-library', 'symptom-categories', 'symptom-days',
 ];
 for (const col of MUTABLE_DOMAINS) {
-  check(`flushSync does NOT push mutable domain '${col}'`, !body.includes(`'${col}'`));
+  check(`flushWriteOnce does NOT push mutable domain '${col}'`, !body.includes(`'${col}'`));
 }
 
 // Must NOT reference any singleton / counter sync or its Firestore path, and must
@@ -81,7 +85,7 @@ for (const forbidden of [
   "'pokes'", "'settings'", "'water-config'", "'steps-config'", "'nutrition-config'",
   'getDoc(', 'getDocs(',
 ]) {
-  check(`flushSync does not reference ${forbidden}`, !body.includes(forbidden));
+  check(`flushWriteOnce does not reference ${forbidden}`, !body.includes(forbidden));
 }
 
 // =============================================================================
@@ -122,19 +126,23 @@ check('no second copy of the mutable merge remains',
   (src.match(/Object\.assign\(localDoc, remote\)|Object\.assign\(localItem, remote\)/g) || []).length === 1);
 
 // =============================================================================
-//  Sign-out runs the FULL sync, not the flush
+//  Sign-out runs the FULL sync (flushSync), not the write-once flush
 // =============================================================================
 
 const settings = readFileSync(join(here, '../src/components/SettingsView.jsx'), 'utf8');
-check('sign-out awaits syncAll (the path with the read)',
-  /await syncAll\(\)/.test(settings));
-check('sign-out does not call flushSync', !/flushSync\(/.test(settings));
-check('syncAll is exported for the sign-out path', /export async function syncAll\(/.test(src));
+check('sign-out awaits flushSync (the full run, which has the read)',
+  /await flushSync\('sign-out'\)/.test(settings));
+check('sign-out does not call flushWriteOnce', !/flushWriteOnce\(/.test(settings));
+check('sign-out does not call syncAll directly', !/syncAll\(/.test(settings));
+check('syncAll is private (only the scheduler and the test seam reach it)',
+  /^async function syncAll\(/m.test(src) && !/export async function syncAll\(/.test(src));
+check('flushSync waits for a run in flight before running',
+  /while \(syncInFlight\) await new Promise/.test(src));
 
 // One domain rejecting (a synchronous throw on corrupt local data) must not
 // resolve syncAll early while the others are mid-push: on the sign-out path
 // that lets signOut() revoke the token underneath them.
-const saStart = src.indexOf('export async function syncAll(');
+const saStart = src.indexOf('async function syncAll(');
 const saBody  = src.slice(saStart, src.indexOf('\n}\n', saStart));
 check('syncAll uses Promise.allSettled, not Promise.all',
   saBody.includes('Promise.allSettled(') && !saBody.includes('Promise.all('));
@@ -163,7 +171,7 @@ check('no bare ts() > ts() comparison remains in the mutable sync',
   !/ts\([^)]*\) > ts\(/.test(mBody));
 
 // Flush-on-hide wiring must be present in startSync.
-check('startSync flushes on tab-hide', /if \(document\.hidden\) flushSync\(\)/.test(src));
+check('startSync flushes write-once rows on tab-hide', /if \(document\.hidden\) flushWriteOnce\(\)/.test(src));
 
 // =============================================================================
 //  W1 - the UID-change guard must not name stores individually

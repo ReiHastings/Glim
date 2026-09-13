@@ -14,6 +14,7 @@
 // -----------------------------------------------------------------------------
 
 import { create } from 'zustand';
+import { notifyLocalWrite, DOMAINS } from '../syncBus';
 
 // --- Load initial values from localStorage ---
 function loadSettings() {
@@ -50,6 +51,7 @@ function saveSettings(state) {
       symptomReminderHour:    state.symptomReminderHour,
       lastModified:     new Date().toISOString(),
     }));
+    notifyLocalWrite(DOMAINS.SETTINGS);
   } catch { /* ignore */ }
 }
 

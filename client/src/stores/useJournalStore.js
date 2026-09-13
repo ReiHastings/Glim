@@ -13,10 +13,12 @@
 // -----------------------------------------------------------------------------
 
 import { create } from 'zustand';
+import { notifyLocalWrite, DOMAINS } from '../syncBus';
 
 function saveEntries(entries) {
   try {
     localStorage.setItem('glim-journal', JSON.stringify(entries));
+    notifyLocalWrite(DOMAINS.JOURNAL);
   } catch { /* ignore */ }
 }
 

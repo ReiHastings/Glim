@@ -45,18 +45,36 @@ check('stopSync bumps the generation', /generation\+\+/.test(stopBody));
 
 // --- Every sync function and both shared helpers capture and check ---
 // A "sync function" is any top-level `async function <name>(` whose name starts
-// with sync, plus pushEntries and flushSync. flushSync is included because it
+// with sync, plus pushEntries, flushWriteOnce and touchSignal. flushWriteOnce
+// (the tab-hide push, named flushSync until 2026-09-10) is included because it
 // calls pushEntries four times in sequence and must guard calls 2-4 itself (the
-// helper's own capture is post-await there; 2026-09-10 review finding). syncAll
-// only fans out and awaits; the five one-line mutable wrappers delegate to
-// syncUpdatedAtCollection. Both exemptions are verified below.
+// helper's own capture is post-await there; 2026-09-10 review finding).
+// touchSignal writes the signal document after the whole run awaited, so it
+// takes the run's generation as a parameter and checks it. syncAll only fans
+// out and awaits; the five one-line mutable wrappers delegate to
+// syncUpdatedAtCollection; the scheduler's flushSync only waits and delegates
+// to runSync. All exemptions are verified below.
 const DELEGATES = new Set(['syncAll', 'syncSymptoms', 'syncSymptomsLibrary',
-  'syncSymptomsCategories', 'syncSymptomClearDays', 'syncNutritionLibrary']);
+  'syncSymptomsCategories', 'syncSymptomClearDays', 'syncNutritionLibrary', 'flushSync']);
 const decl = /^(?:export )?async function (\w+)\(/gm;
 const names = [];
 for (const m of src.matchAll(decl)) names.push({ name: m[1], at: m.index });
-const targets = names.filter(n => (n.name.startsWith('sync') || n.name === 'pushEntries' || n.name === 'flushSync') && !DELEGATES.has(n.name));
+const targets = names.filter(n => (n.name.startsWith('sync') || n.name === 'pushEntries' || n.name === 'flushWriteOnce') && !DELEGATES.has(n.name));
 check('found the expected number of guarded functions (11)', targets.length === 11);
+
+// touchSignal is guarded through its `gen` parameter rather than a capture.
+{
+  const n = names.find(x => x.name === 'touchSignal');
+  const next = names[names.indexOf(n) + 1]?.at ?? src.length;
+  const body = n ? src.slice(n.at, next) : '';
+  // includes() first: indexOf returns -1 when the guard is ABSENT, and -1 is
+  // less than any hit, so an ordering test alone is satisfied by a missing
+  // guard (code review 2026-09-12, CRITICAL: verified vacuous by mutation).
+  check('touchSignal takes the run generation and checks stale(gen, ...) before its write',
+    n && /async function touchSignal\(uid, gen\)/.test(body)
+      && body.includes('stale(gen,') && body.includes('setDoc(')
+      && body.indexOf('stale(gen,') < body.indexOf('setDoc('));
+}
 
 for (let i = 0; i < names.length; i++) {
   const n = names[i];
@@ -76,12 +94,30 @@ for (const d of ['syncSymptoms', 'syncSymptomsLibrary', 'syncSymptomsCategories'
   check(`${d} delegates to syncUpdatedAtCollection`, n && src.slice(n.at, next).includes('return syncUpdatedAtCollection('));
 }
 
-// syncAll's exemption is honest only while it performs no write of its own.
-{
-  const n = names.find(x => x.name === 'syncAll');
+// Clock independence of the signal (plan_signal_server_timestamp.md,
+// 2026-09-12): the signal's `at` is server-assigned, and the listener orders
+// server stamps only. Neither function may consult the device clock, or a
+// skewed device silently drops foreign signals until the fallback (S4 in
+// sync_scheduler is the behavioural half; this is the cheap static half).
+for (const fn of ['touchSignal', 'watchSignal']) {
+  const at = src.indexOf(`function ${fn}(`);
+  // Body ends at the next top-level declaration of any form (plain, async, or
+  // exported), so a Date in startSync or the test seam is not blamed on watchSignal.
+  const rest = at === -1 ? '' : src.slice(at + 1);
+  const m = rest.match(/\n(?:export )?(?:async )?function |\nexport const /);
+  const body = at === -1 ? '' : src.slice(at, m ? at + 1 + m.index : src.length);
+  check(`${fn}: does not reference Date`, at !== -1 && !/\bDate\b/.test(body));
+}
+check('touchSignal writes the signal `at` with serverTimestamp()',
+  /async function touchSignal[\s\S]*?at: serverTimestamp\(\)/.test(src));
+
+// syncAll's and flushSync's exemptions are honest only while they perform no
+// write of their own.
+for (const exempt of ['syncAll', 'flushSync']) {
+  const n = names.find(x => x.name === exempt);
   const next = names[names.indexOf(n) + 1]?.at ?? src.length;
-  const body = src.slice(n.at, next);
-  check('syncAll performs no write of its own', !/localSet|localSetRaw|setSyncMeta|setDoc\(|notify\(/.test(body));
+  const body = n ? src.slice(n.at, next) : '';
+  check(`${exempt} performs no write of its own`, n && !/localSet|localSetRaw|setSyncMeta|setDoc\(|notify\(/.test(body));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

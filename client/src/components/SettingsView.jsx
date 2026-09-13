@@ -19,7 +19,7 @@ import { useState, useEffect } from 'react';
 import { signOut } from 'firebase/auth';
 import { deleteDoc, getDocs, collection, doc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
-import { syncAll } from '../sync';
+import { flushSync } from '../sync';
 import { useUIStore } from '../stores/useUIStore';
 import { useSettingsStore } from '../stores/useSettingsStore';
 import { useWaterStore } from '../stores/useWaterStore';
@@ -174,15 +174,16 @@ export default function SettingsView() {
 
   // Run a FULL sync while still authenticated, so anything written since the
   // last one reaches Firestore before the session (and, on an account switch,
-  // its localStorage) ends. This is syncAll rather than flushSync on purpose:
-  // this call is awaited, so it can afford the read that makes pushing the
-  // mutable domains (symptoms, libraries, categories, clear days) safe, whereas
-  // the fire-and-forget tab-hide flush cannot and so skips them. Best-effort:
-  // sign-out must proceed even if the sync fails (e.g. offline). The
-  // reset-all-data path deliberately does NOT sync - it is a delete, so pushing
-  // first would be counterproductive.
+  // its localStorage) ends. flushSync waits for any run already in flight and
+  // then performs a full run (push + pull): this call is awaited, so it can
+  // afford the read that makes pushing the mutable domains (symptoms,
+  // libraries, categories, clear days) safe, whereas the fire-and-forget
+  // tab-hide flushWriteOnce cannot and so skips them. Best-effort: sign-out
+  // must proceed even if the sync fails (e.g. offline). The reset-all-data
+  // path deliberately does NOT sync - it is a delete, so pushing first would
+  // be counterproductive.
   const handleSignOut = async () => {
-    try { await syncAll(); } catch { /* ignore */ }
+    try { await flushSync('sign-out'); } catch { /* ignore */ }
     await signOut(auth);
   };
 

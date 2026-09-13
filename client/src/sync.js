@@ -31,12 +31,28 @@
 //              (syncUpdatedAtCollection), and they never ride the tab-hide
 //              flush. See the Decision Register entry of 2026-09-06.
 //
-//              Sync triggers: startup, every 60 seconds while foregrounded,
-//              and tab focus all run syncAll (push + pull). Tab-hide runs
-//              flushSync (write-once push only). Sign-out awaits a full
-//              syncAll. A hidden tab's interval is throttled or frozen by the
-//              browser, so the honest bound on "next syncAll" for a
-//              backgrounded tab is "when it is next foregrounded".
+//              Sync is EVENT-TRIGGERED (since 2026-09-10; before that a 60 s
+//              poll). A full run (push + pull, all 13 domains) starts on:
+//                - startup (startSync), tab focus, and the browser's 'online'
+//                  event: immediately;
+//                - a local write (a store calling notifyLocalWrite on
+//                  syncBus.js) or a remote write (another device touching the
+//                  signal document users/{uid}/sync/signal, watched with one
+//                  onSnapshot listener): after a short debounce;
+//                - a slow fallback interval, as a safety net only.
+//              A run that pushed at least one document touches the signal
+//              document afterwards, which is what wakes the other devices.
+//              The signal's `at` is SERVER-assigned (serverTimestamp()), so
+//              the listener orders stamps from one clock and a device's own
+//              clock never matters (Decision Register 2026-09-12).
+//              Nothing is written on an idle run, so two open devices cannot
+//              trigger each other (every push condition is strict; see
+//              Decision Register 2026-09-10, strict singleton comparison).
+//              Tab-hide runs flushWriteOnce (write-once push only). Sign-out
+//              awaits flushSync, a full run that first waits for any run in
+//              flight. A hidden tab's timers are throttled or frozen by the
+//              browser, so the honest bound on "next run" for a backgrounded
+//              tab is "when it is next foregrounded".
 //
 //              A run that is still in flight when the session ends (stopSync,
 //              or startSync for another account) must not write: see the
@@ -48,24 +64,32 @@
 //              After a pull that changes localStorage, fires a
 //              'glim-data-updated' CustomEvent so DesktopPet can reload.
 //
-// Inputs:      Firebase db and auth from firebase.js
-// Outputs:     CustomEvent('glim-data-updated', { detail: { domains: [...] } })
-// Usage:       import { startSync, stopSync, syncAll } from './sync'
-//              startSync(uid)   // call after auth
-//              await syncAll()  // call before sign-out (full reconcile)
-//              stopSync()       // call on sign-out
+// Inputs:      Firebase db from firebase.js; local-write events from syncBus.js
+// Outputs:     CustomEvent('glim-data-updated', { detail: { domains: [...] } });
+//              users/{uid}/sync/signal { at, by } after a run that pushed
+// Usage:       import { startSync, stopSync, flushSync } from './sync'
+//              startSync(uid)               // call after auth
+//              await flushSync('sign-out')  // full reconcile, waits for in-flight run
+//              stopSync()                   // call on sign-out
+//              localStorage['glim-debug-sync'] = '1'  // per-run counters in the console
 // -----------------------------------------------------------------------------
 
 import { db } from './firebase';
 import {
-  collection, doc, getDocs, setDoc, getDoc,
+  collection, doc, getDocs, setDoc, getDoc, onSnapshot, serverTimestamp,
 } from 'firebase/firestore';
+import { onLocalWrite } from './syncBus';
 
 // --- Internal state ---
 
-let syncInterval = null;
-let visibilityHandler = null;
 let currentUid = null;
+
+// Teardown functions for everything startSync registers (signal listener,
+// local-write subscription, debounce timer, online and visibility handlers,
+// fallback interval). stopSync drains it. startSync calls stopSync first, so a
+// re-entrant call (StrictMode double-mount, direct account switch, same-user
+// re-fire of onAuthStateChanged) can never leave a second listener behind.
+let handles = [];
 
 // Identifies the current sync session. Bumped by startSync and stopSync, so a
 // run that captured an older value belongs to a session that has ended or been
@@ -146,6 +170,15 @@ function ts(v) {
   return v ? new Date(v).getTime() : 0;
 }
 
+// Milliseconds of a signal stamp: a Firestore Timestamp (server-written, the
+// only form this client ever writes) or null (a pending server timestamp, or
+// absent). Deliberately no string branch: the signal document was never
+// deployed with a client-written string, and comparing a client stamp against
+// a server stamp would carry the writer's clock skew forward.
+function signalMs(v) {
+  return v && typeof v.toMillis === 'function' ? v.toMillis() : null;
+}
+
 // Does timestamp `a` beat timestamp `b`? Strictly greater wins; a missing stamp
 // is 0 and so loses to any real one.
 //
@@ -186,6 +219,32 @@ function writeOncePayload(entry) {
 
 function notify(domains) {
   window.dispatchEvent(new CustomEvent('glim-data-updated', { detail: { domains } }));
+}
+
+// --- Per-run read/write accounting ---
+//
+// Every domain function reports { domain, docsRead, docsPushed } once per run.
+// docsPushed is summed into runPushed, which is the ONE source of truth for
+// "did this run push anything": the scheduler touches the signal document
+// only when it is greater than zero. docsRead is snapshot.size for a getDocs
+// pull and 1 for a getDoc singleton. Firestore bills at least one read per
+// query, so the billed figure for an EMPTY collection is 1, not the 0 logged
+// here. docsPushed counts setDoc calls attempted, whether or not they
+// succeeded.
+//
+// Logging is off by default. Set localStorage 'glim-debug-sync' to '1'
+// (devtools, no rebuild or reload needed) to log one line per domain per run,
+// plus one line per run start and per signal write.
+let runPushed = 0;
+
+function debugSyncEnabled() {
+  try { return typeof localStorage !== 'undefined' && localStorage.getItem('glim-debug-sync') === '1'; }
+  catch { return false; }
+}
+
+function recordDomain(domain, docsRead, docsPushed) {
+  runPushed += docsPushed;
+  if (debugSyncEnabled()) console.debug('[glim sync]', { domain, docsRead, docsPushed });
 }
 
 // --- Write-once push helpers (shared by full sync and flushSync) ---
@@ -317,6 +376,7 @@ async function syncJournal(uid) {
   // A device that only pulled remote entries would otherwise keep lastPushedAt
   // at epoch and re-push all pulled entries on the next cycle.
   setSyncMeta({ journalPushedAt: new Date().toISOString() });
+  recordDomain('journal', snapshot.size, toPush.length);
 }
 
 // =============================================================================
@@ -337,16 +397,23 @@ async function syncPokes(uid) {
     const remoteTotal = snap.exists() ? (snap.data().total ?? 0) : 0;
     if (stale(gen, 'pokes')) return;
 
-    if (localTotal >= remoteTotal) {
-      // Local has more pokes (or same): push to Firestore
+    if (!snap.exists() || localTotal > remoteTotal) {
+      // Local has more pokes, or no remote doc yet: push to Firestore
       await setDoc(pokesRef, {
         total: localTotal,
         lastModified: new Date().toISOString(),
       }, { merge: true });
-    } else {
+      recordDomain('pokes', 1, 1);
+    } else if (remoteTotal > localTotal) {
       // Remote has more pokes: update local
       localSetRaw('glim-pokes', String(remoteTotal));
       notify(['pokes']);
+      recordDomain('pokes', 1, 0);
+    } else {
+      // Equal totals: the count already on the server. Nothing moves, and in
+      // particular lastModified is NOT rewritten (a write here on every idle
+      // run would touch the signal document and ping-pong two open devices).
+      recordDomain('pokes', 1, 0);
     }
   } catch (e) {
     console.warn('[glim sync] pokes sync failed:', e);
@@ -377,15 +444,21 @@ async function syncSettings(uid) {
     const localTime = localSettings?.lastModified ? new Date(localSettings.lastModified) : new Date(0);
     const remoteTime = remoteSettings?.lastModified ? new Date(remoteSettings.lastModified) : new Date(0);
 
-    if (!remoteSettings || localTime >= remoteTime) {
-      // Local is newer (or no remote yet): push to Firestore
+    if (!snap.exists() || localTime > remoteTime) {
+      // Local is strictly newer, or no remote doc yet: push to Firestore
       if (localSettings) {
         await setDoc(settingsRef, localSettings, { merge: true });
       }
-    } else {
+      recordDomain('settings', 1, localSettings ? 1 : 0);
+    } else if (remoteTime > localTime) {
       // Remote is newer: update local
       localSet('glim-settings', remoteSettings);
       notify(['settings']);
+      recordDomain('settings', 1, 0);
+    } else {
+      // Equal lastModified: the same write, already pushed (every save stamps
+      // a fresh lastModified). Nothing moves.
+      recordDomain('settings', 1, 0);
     }
   } catch (e) {
     console.warn('[glim sync] settings sync failed:', e);
@@ -466,6 +539,7 @@ async function syncWater(uid) {
   // --- CONFIG: last-write-wins by configUpdatedAt ---
   const configRef    = doc(db, 'users', uid, 'water-config', 'current');
   const localConfig  = { bottleOz: local.bottleOz, goal: local.goal, configUpdatedAt: local.configUpdatedAt ?? new Date(0).toISOString() };
+  let configPushed   = 0;
 
   try {
     const configSnap   = await getDoc(configRef);
@@ -474,12 +548,16 @@ async function syncWater(uid) {
     const localTime    = localConfig.configUpdatedAt ? new Date(localConfig.configUpdatedAt) : new Date(0);
     const remoteTime   = remoteConfig?.configUpdatedAt ? new Date(remoteConfig.configUpdatedAt) : new Date(0);
 
-    if (!remoteConfig || localTime >= remoteTime) {
+    if (!configSnap.exists() || localTime > remoteTime) {
+      // Local strictly newer, or no remote doc yet: push
       await setDoc(configRef, localConfig, { merge: true });
-    } else {
+      configPushed = 1;
+    } else if (remoteTime > localTime) {
+      // Remote newer: pull
       local   = { ...local, bottleOz: remoteConfig.bottleOz, goal: remoteConfig.goal, configUpdatedAt: remoteConfig.configUpdatedAt };
       changed = true;
     }
+    // Equal configUpdatedAt: the same write, already pushed. Nothing moves.
   } catch (e) {
     console.warn('[glim sync] water config sync failed:', e);
   }
@@ -495,7 +573,8 @@ async function syncWater(uid) {
   // A device that only pulled remote entries would otherwise keep lastPushedAt
   // at epoch and re-push all pulled entries on the next cycle.
   setSyncMeta({ waterPushedAt: new Date().toISOString() });
-
+  // Reads: the entries getDocs plus the one water-config getDoc.
+  recordDomain('water', snapshot.size + 1, toPush.length + configPushed);
 }
 
 // =============================================================================
@@ -565,6 +644,7 @@ async function syncSteps(uid) {
   // A device that only pulled remote entries would otherwise keep lastPushedAt
   // at epoch and re-push all pulled entries on the next cycle.
   setSyncMeta({ stepsPushedAt: new Date().toISOString() });
+  recordDomain('steps', snapshot.size, toPush.length);
 }
 
 // =============================================================================
@@ -599,14 +679,19 @@ async function syncStepsConfig(uid) {
     const localTime    = new Date(localConfig.configUpdatedAt);
     const remoteTime   = remoteConfig?.configUpdatedAt ? new Date(remoteConfig.configUpdatedAt) : new Date(0);
 
-    if (!remoteConfig || localTime >= remoteTime) {
-      // Local is newer (or no remote): push
+    if (!snap.exists() || localTime > remoteTime) {
+      // Local strictly newer, or no remote doc yet: push
       await setDoc(configRef, localConfig, { merge: true });
-    } else {
+      recordDomain('steps-config', 1, 1);
+    } else if (remoteTime > localTime) {
       // Remote is newer: pull
       local = { ...local, goal: remoteConfig.goal, configUpdatedAt: remoteConfig.configUpdatedAt };
       localSet('glim-steps', local);
       notify(['steps']);
+      recordDomain('steps-config', 1, 0);
+    } else {
+      // Equal configUpdatedAt: the same write, already pushed. Nothing moves.
+      recordDomain('steps-config', 1, 0);
     }
   } catch (e) {
     console.warn('[glim sync] steps config sync failed:', e);
@@ -685,6 +770,7 @@ async function syncNutritionLogs(uid) {
   }
 
   setSyncMeta({ nutritionPushedAt: new Date().toISOString() });
+  recordDomain('nutrition', snapshot.size, toPush.length);
 }
 
 // =============================================================================
@@ -715,14 +801,19 @@ async function syncNutritionConfig(uid) {
     const localTime    = new Date(localConfigUpdatedAt);
     const remoteTime   = remoteConfig?.configUpdatedAt ? new Date(remoteConfig.configUpdatedAt) : new Date(0);
 
-    if (!remoteConfig || localTime >= remoteTime) {
-      // Local is newer (or no remote): push
+    if (!snap.exists() || localTime > remoteTime) {
+      // Local strictly newer, or no remote doc yet: push
       await setDoc(configRef, { goals: localGoals, configUpdatedAt: localConfigUpdatedAt }, { merge: true });
-    } else {
+      recordDomain('nutrition-config', 1, 1);
+    } else if (remoteTime > localTime) {
       // Remote is newer: pull
       local = { ...local, goals: remoteConfig.goals, configUpdatedAt: remoteConfig.configUpdatedAt };
       localSet('glim-nutrition', local);
       notify(['nutrition']);
+      recordDomain('nutrition-config', 1, 0);
+    } else {
+      // Equal configUpdatedAt: the same write, already pushed. Nothing moves.
+      recordDomain('nutrition-config', 1, 0);
     }
   } catch (e) {
     console.warn('[glim sync] nutrition config sync failed:', e);
@@ -884,16 +975,19 @@ async function syncUpdatedAtCollection(uid, { storageKey, arrayField, collection
   // Runs over the post-merge list, so a row the pull just replaced compares
   // equal to its remote copy and is skipped.
   const finalDocs = Array.isArray(local[arrayField]) ? local[arrayField] : [];
+  let pushed = 0;
   for (const entry of finalDocs) {
     const remote = remoteById.get(String(entry.id));
     if (remote && !beats(entry.updatedAt, remote.updatedAt)) continue;
     if (stale(gen, collectionName)) return;   // each iteration awaits
+    pushed += 1;
     try {
       await setDoc(doc(docsRef, String(entry.id)), entry, { merge: true });
     } catch (e) {
       console.warn(`[glim sync] ${collectionName} push failed:`, entry.id, e);
     }
   }
+  recordDomain(domain, snapshot.size, pushed);
 }
 
 async function syncSymptoms(uid) {
@@ -936,15 +1030,18 @@ async function syncSymptomClearDays(uid) {
 //  Sync orchestrator
 // =============================================================================
 
-// `uid` defaults to the active session; the parameter exists for the tests,
-// which drive this against the Firestore mock without startSync.
+// Private fan-out over the 13 domain functions: one full push + pull. Not
+// exported; the scheduler below (runSync / flushSync) is the only production
+// caller, so a run can never overlap the watermark advance of another one
+// started from outside. Tests reach it through the __test seam. `uid`
+// defaults to the active session for that seam.
 //
 // allSettled, not all: every domain function catches its own I/O errors, but a
 // synchronous throw (corrupt local data) rejects that domain's promise, and
 // Promise.all would then resolve syncAll early while the other domains were
 // still mid-push - which, on the sign-out path, lets signOut() revoke the
 // token underneath them. One bad domain must not void the others.
-export async function syncAll(uid = currentUid) {
+async function syncAll(uid = currentUid) {
   if (!uid) return;
   const results = await Promise.allSettled([
     syncJournal(uid),
@@ -967,10 +1064,12 @@ export async function syncAll(uid = currentUid) {
 }
 
 // =============================================================================
-//  flushSync - opportunistic push of unsynced WRITE-ONCE data only
+//  flushWriteOnce - opportunistic push of unsynced WRITE-ONCE data only
+//  (named flushSync until 2026-09-10; that name now belongs to the awaited
+//  full run below)
 //
 //  Called on tab-hide to shrink the window in which a just-written entry could
-//  be lost (storage eviction, tab suspension) before the next 60s sync. It is
+//  be lost (storage eviction, tab suspension) before the next full run. It is
 //  fire-and-forget on a path where the page may be frozen mid-flight, so it
 //  performs no reads.
 //
@@ -984,8 +1083,8 @@ export async function syncAll(uid = currentUid) {
 //  but id-keyed is not the property that makes a blind push safe - write-once
 //  is. A stale mutable row pushed here would overwrite a newer remote copy,
 //  updatedAt included, and the devices would diverge permanently. Those domains
-//  reconcile on syncAll, which has the read that makes their push safe, and
-//  sign-out awaits a full syncAll for the same reason.
+//  reconcile on the full run, which has the read that makes their push safe,
+//  and sign-out awaits a full run (flushSync) for the same reason.
 //
 //  It does NOT push pokes, settings, or any *-config doc either: those are
 //  take-the-max or last-write-wins singletons whose safe "push" requires first
@@ -995,7 +1094,7 @@ export async function syncAll(uid = currentUid) {
 //  id-keyed argument. tests/flushsync_scope.test.mjs now asserts they are absent.
 // =============================================================================
 
-export async function flushSync(uid = currentUid) {
+export async function flushWriteOnce(uid = currentUid) {
   const gen = generation;
   if (!uid) return;
   const meta = getSyncMeta();
@@ -1021,8 +1120,181 @@ export async function flushSync(uid = currentUid) {
     await pushEntries(uid, 'nutrition',
       Array.isArray(nutrition?.logs) ? nutrition.logs : [], at(meta.nutritionPushedAt), nutritionLogNeedsPush);
   } catch (e) {
-    console.warn('[glim flush] flushSync failed:', e);
+    console.warn('[glim flush] flushWriteOnce failed:', e);
   }
+}
+
+// =============================================================================
+//  Scheduler: event-triggered runs
+//
+//  Replaces the 60 s poll (2026-09-10). A run is a full push + pull over every
+//  domain (syncAll). Runs are serialised: runSync coalesces a request that
+//  arrives while a run is in flight into ONE follow-up run after it, so two
+//  runs can never interleave on the pushedAt watermarks.
+//
+//  Triggers and their reasons (logged under the debug flag):
+//    startup   startSync, immediately
+//    focus     visibilitychange to visible, immediately
+//    online    window 'online', immediately
+//    local:*   a store persisted to localStorage (syncBus), debounced
+//    signal    another device touched users/{uid}/sync/signal, debounced
+//    fallback  slow interval, safety net only
+//    sign-out  flushSync('sign-out') from SettingsView
+//
+//  The signal document is the only cross-device wake-up. A run that pushed at
+//  least one document (runPushed > 0) writes { at, by: deviceId } to it; the
+//  other device's listener sees the change, ignores writes carrying its own
+//  device id, and schedules a run. Because every push condition is strict, an
+//  idle run pushes nothing and does not touch the signal, so two open devices
+//  settle after one exchange instead of waking each other forever.
+//
+//  Cost per idle hour with the tab open: zero reads and zero writes beyond the
+//  fallback runs (one listener on a single document is free while idle).
+// =============================================================================
+
+const DEBOUNCE_MS          = 2_000;
+const FALLBACK_INTERVAL_MS = 15 * 60_000;
+// Mutable so tests can shrink them (see __test.setTimings).
+const timings = { debounceMs: DEBOUNCE_MS, fallbackMs: FALLBACK_INTERVAL_MS };
+
+let runPromise     = null;   // the run in flight, or null
+let syncInFlight   = false;  // mirrors runPromise !== null; read by flushSync
+let rerunRequested = false;  // a trigger arrived mid-run: run once more after
+let rerunReason    = null;
+let debounceTimer  = null;
+let lastRunPushed  = 0;      // runPushed of the most recent completed run (tests)
+let signalWrites   = 0;      // touchSignal calls this session (tests)
+
+// A stable id for this browser profile, so a device can recognise its own
+// signal writes. Two tabs of the same browser share it, which is correct: they
+// also share localStorage, so neither has anything to pull from the other.
+function deviceId() {
+  try {
+    let id = localStorage.getItem('glim-device-id');
+    if (!id) {
+      id = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      localStorage.setItem('glim-device-id', id);
+    }
+    return id;
+  } catch {
+    return 'unknown';
+  }
+}
+
+function signalRef(uid) {
+  return doc(db, 'users', uid, 'sync', 'signal');
+}
+
+// Written after a run that pushed something. Full overwrite (no merge): the
+// document has exactly two fields and nothing else should ever accumulate in
+// it. `at` is stamped by the SERVER: two devices' clocks are never compared,
+// so a skewed clock cannot make one device ignore the other (plan review
+// 2026-09-11). Guarded like every other post-await write.
+async function touchSignal(uid, gen) {
+  if (stale(gen, 'signal')) return;
+  try {
+    await setDoc(signalRef(uid), { at: serverTimestamp(), by: deviceId() });
+    signalWrites++;
+    if (debugSyncEnabled()) console.debug('[glim sync] touchSignal', { uid });
+  } catch (e) {
+    console.warn('[glim sync] signal write failed:', e);
+  }
+}
+
+// One full run, then the signal write if anything was pushed. A run whose
+// session ended mid-way does not attempt the signal at all (its domain writes
+// were already discarded one by one); touchSignal's own guard is the backstop
+// for a session ending during the fan-out's final await.
+async function runOnce(uid, reason) {
+  const gen = generation;
+  runPushed = 0;
+  if (debugSyncEnabled()) console.debug(`[glim sync] run (${reason})`);
+  await syncAll(uid);
+  lastRunPushed = runPushed;
+  if (runPushed > 0 && gen === generation) await touchSignal(uid, gen);
+}
+
+// Start a run now, or fold the request into the run already in flight (which
+// then runs once more when it finishes). Returns a promise that resolves when
+// the run this request is part of, follow-up included, has completed.
+function runSync(reason) {
+  const uid = currentUid;
+  if (!uid) return Promise.resolve();
+  if (runPromise) {
+    rerunRequested = true;
+    rerunReason = reason;
+    return runPromise;
+  }
+  const gen = generation;
+  const p = (async () => {
+    try {
+      let r = reason;
+      do {
+        rerunRequested = false;
+        await runOnce(uid, r);
+        r = rerunReason;
+      } while (rerunRequested && gen === generation);
+    } finally {
+      // stopSync may already have detached this run and a new session may own
+      // runPromise now; only clear what is still ours.
+      if (runPromise === p) { runPromise = null; syncInFlight = false; }
+    }
+  })();
+  runPromise = p;
+  syncInFlight = true;
+  return p;
+}
+
+// Debounced trigger for bursty sources (a user logging three bottles in a row,
+// or the other device pushing them). Each new event restarts the timer.
+function schedule(reason) {
+  if (!currentUid) return;
+  if (debounceTimer) clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => {
+    debounceTimer = null;
+    runSync(reason);
+  }, timings.debounceMs);
+}
+
+// One onSnapshot on the signal document. Pending snapshots (this device's own
+// optimistic echo, in which the server timestamp reads as null) are dropped
+// first, so they can never become the baseline. The first acknowledged
+// snapshot is the baseline (the startup run, which begins right after this
+// listener attaches, covers anything already on the server); later snapshots
+// schedule a run unless they are this device's own acknowledged write or a
+// re-delivery of a stamp already seen (listener reconnect). All stamps are
+// server-assigned, so `<=` is a valid ordering regardless of device clocks.
+//
+// Known gap: if the very first snapshot after attach is pending (StrictMode
+// double mount immediately after a run that touched the signal), the baseline
+// is taken from the NEXT acknowledged snapshot and that one is swallowed even
+// if foreign; the fallback covers it. Same-millisecond commits compare equal
+// under toMillis() and the second is dropped; unreachable for one document.
+function watchSignal(uid) {
+  let seenMs;   // undefined until the baseline (first acknowledged) snapshot
+  return onSnapshot(
+    signalRef(uid),
+    (snap) => {
+      if (snap.metadata?.hasPendingWrites) return;
+      const data = snap.exists() ? snap.data() : null;
+      const atMs = signalMs(data?.at);
+      const by   = data?.by ?? null;
+      if (seenMs === undefined) { seenMs = atMs; return; }
+      if (atMs !== null && seenMs !== null && atMs <= seenMs) return;
+      seenMs = atMs;
+      if (by === deviceId()) return;
+      schedule('signal');
+    },
+    (e) => console.warn('[glim sync] signal listener error:', e),
+  );
+}
+
+// Awaited full run for callers outside the scheduler (sign-out). Waits for any
+// run in flight so its own run cannot overlap it, then runs. Performs no write
+// of its own.
+export async function flushSync(reason = 'flush') {
+  while (syncInFlight) await new Promise((r) => setTimeout(r, 50));
+  await runSync(reason);
 }
 
 // =============================================================================
@@ -1030,40 +1302,63 @@ export async function flushSync(uid = currentUid) {
 // =============================================================================
 
 export function startSync(uid) {
-  // Idempotent: clear any prior interval/listener first, so a re-entrant call
-  // (e.g. a direct account switch with no intervening sign-out) cannot leave a
-  // second 60s timer and a second visibility handler running.
+  // Idempotent: tear down everything a prior session registered first, so a
+  // re-entrant call (StrictMode double-mount in dev, a direct account switch
+  // with no intervening sign-out, a same-user re-fire of onAuthStateChanged)
+  // can never leave a second listener, subscription, or timer running.
   stopSync();
   currentUid = uid;
   generation++;          // stopSync above bumped too; a second bump is harmless
   pruneStaleSyncMeta();
 
-  // Sync immediately on app load to pull cross-device data
-  syncAll();
+  // 1. Remote writes: the signal listener. Attached BEFORE the startup run so
+  //    a signal written after its baseline snapshot is never missed.
+  handles.push(watchSignal(uid));
 
-  // Periodic sync every 60 seconds
-  syncInterval = setInterval(syncAll, 60_000);
+  // 2. Local writes: stores announce each localStorage persist on syncBus.
+  handles.push(onLocalWrite((domain) => schedule(`local:${domain}`)));
 
-  // On tab focus: full sync (pull cross-device updates). On tab hide: best-effort
-  // flush of unsynced entry-log data before the tab may be suspended or evicted.
-  visibilityHandler = () => {
-    if (document.hidden) flushSync();
-    else syncAll();
+  // 3. The debounce timer, so a pending trigger dies with the session.
+  handles.push(() => {
+    if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
+  });
+
+  // 4. Connectivity regained.
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    const onOnline = () => runSync('online');
+    window.addEventListener('online', onOnline);
+    handles.push(() => window.removeEventListener('online', onOnline));
+  }
+
+  // 5. Tab focus: full run. Tab hide: best-effort flush of unsynced
+  //    write-once rows before the tab may be suspended or evicted.
+  const onVisibility = () => {
+    if (document.hidden) flushWriteOnce();
+    else runSync('focus');
   };
-  document.addEventListener('visibilitychange', visibilityHandler);
+  document.addEventListener('visibilitychange', onVisibility);
+  handles.push(() => document.removeEventListener('visibilitychange', onVisibility));
+
+  // 6. Fallback interval: safety net for a missed signal (listener dropped,
+  //    write failed). Throttled or frozen by the browser while hidden.
+  const fallback = setInterval(() => runSync('fallback'), timings.fallbackMs);
+  handles.push(() => clearInterval(fallback));
+
+  // Startup run: pull cross-device data, push anything unsynced.
+  runSync('startup');
 }
 
 export function stopSync() {
   currentUid = null;
   generation++;          // any run still in flight now fails its stale() checks
-  if (syncInterval) {
-    clearInterval(syncInterval);
-    syncInterval = null;
+  for (const teardown of handles.splice(0)) {
+    try { teardown(); } catch (e) { console.warn('[glim sync] teardown failed:', e); }
   }
-  if (visibilityHandler) {
-    document.removeEventListener('visibilitychange', visibilityHandler);
-    visibilityHandler = null;
-  }
+  // Detach the in-flight run, if any. It keeps running but every write it
+  // attempts from here on is discarded by the generation guard.
+  runPromise = null;
+  syncInFlight = false;
+  rerunRequested = false;
 }
 
 // Test seam: expose internal sync functions (which already take an explicit uid)
@@ -1073,6 +1368,17 @@ export const __test = {
   syncWater, syncSymptoms, syncSymptomsLibrary,
   syncSymptomsCategories, syncSymptomClearDays, syncNutritionLibrary,
   syncNutritionLogs, syncJournal, pruneStaleSyncMeta, writeOncePayload, beats,
-  generation: () => generation,
-  staleSkips: () => staleSkips,
+  syncAll,
+  generation:    () => generation,
+  staleSkips:    () => staleSkips,
+  lastRunPushed: () => lastRunPushed,
+  signalWrites:  () => signalWrites,
+  inFlight:      () => syncInFlight,
+  handleCount:   () => handles.length,
+  deviceId,
+  // Shrink the scheduler's timers so a test can wait milliseconds, not minutes.
+  setTimings: ({ debounceMs, fallbackMs } = {}) => {
+    if (debounceMs !== undefined) timings.debounceMs = debounceMs;
+    if (fallbackMs !== undefined) timings.fallbackMs = fallbackMs;
+  },
 };

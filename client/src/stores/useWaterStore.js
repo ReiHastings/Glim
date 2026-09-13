@@ -13,6 +13,7 @@
 // -----------------------------------------------------------------------------
 
 import { create } from 'zustand';
+import { notifyLocalWrite, DOMAINS } from '../syncBus';
 import { todayStr, dateStr, toLogicalDateStr } from '../utils/dateUtils';
 
 const STORAGE_KEY = 'glim-water';
@@ -48,6 +49,7 @@ function saveWater(state) {
       goal:             state.goal,
       configUpdatedAt:  state.configUpdatedAt,
     }));
+    notifyLocalWrite(DOMAINS.WATER);
   } catch { /* ignore */ }
 }
 

@@ -12,6 +12,7 @@
 // -----------------------------------------------------------------------------
 
 import { create } from 'zustand';
+import { notifyLocalWrite, DOMAINS } from '../syncBus';
 
 function loadTotal() {
   try {
@@ -27,6 +28,7 @@ export const usePokesStore = create((set, get) => ({
     const total = get().total + 1;
     set({ total });
     try { localStorage.setItem('glim-pokes', String(total)); } catch { /* ignore */ }
+    notifyLocalWrite(DOMAINS.POKES);
   },
 
   // Called by sync service event handler when remote total arrives

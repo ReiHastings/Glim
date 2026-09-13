@@ -1,0 +1,77 @@
+// title: syncbus_wiring.test.mjs
+// project: Glim
+// author: Reina Hastings
+// contact: reinahastings13@gmail.com
+// date created: 2026-09-10
+//
+// purpose:
+//   Static-analysis guard for the local-write trigger of the event-triggered
+//   sync (2026-09-10). Sync no longer polls, so a store that persists to
+//   localStorage WITHOUT announcing it on syncBus is a store whose writes reach
+//   Firestore only on tab focus or the 15-minute fallback. This test fails the
+//   moment such a store appears. Also asserts the layering: syncBus.js imports
+//   nothing from Firebase and no store imports sync.js or firebase.js.
+//
+// usage:
+//   cd client && node tests/syncbus_wiring.test.mjs
+
+import { readFileSync, readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const src  = (p) => readFileSync(join(here, '../src', p), 'utf8');
+
+let passed = 0, failed = 0;
+function check(name, cond) {
+  if (cond) { passed++; console.log(`  ok   ${name}`); }
+  else { failed++; console.error(`  FAIL ${name}`); }
+}
+
+// --- syncBus.js: the domain list and the layering ---
+const busSrc = src('syncBus.js');
+check('syncBus.js imports nothing from firebase', !/from ['"](firebase|\.\/firebase)/.test(busSrc));
+check('syncBus.js does not import sync.js', !/from ['"]\.\/sync['"]/.test(busSrc));
+const domainBlock = busSrc.slice(busSrc.indexOf('export const DOMAINS'), busSrc.indexOf('});', busSrc.indexOf('export const DOMAINS')));
+const DOMAIN_KEYS   = [...domainBlock.matchAll(/^\s+([A-Z_]+):\s+'([a-z-]+)',/gm)].map(m => m[1]);
+const DOMAIN_VALUES = [...domainBlock.matchAll(/^\s+([A-Z_]+):\s+'([a-z-]+)',/gm)].map(m => m[2]);
+check('DOMAINS lists 13 domains', DOMAIN_VALUES.length === 13);
+
+// --- sync.js records under exactly those strings ---
+const syncSrc = src('sync.js');
+const recorded = new Set([...syncSrc.matchAll(/recordDomain\('([a-z-]+)'/g)].map(m => m[1]));
+// The mutable helper records under a `domain` variable; those five come from
+// the wrappers' `domain:` fields.
+for (const m of syncSrc.matchAll(/domain:\s+'([a-z-]+)'/g)) recorded.add(m[1]);
+check('every DOMAINS value is recorded by some sync function', DOMAIN_VALUES.every(d => recorded.has(d)));
+check('sync.js records no domain outside DOMAINS', [...recorded].every(d => DOMAIN_VALUES.includes(d)));
+check('sync.js subscribes to local writes via syncBus', /import \{ onLocalWrite \} from '\.\/syncBus'/.test(syncSrc) && /onLocalWrite\(/.test(syncSrc));
+
+// --- Every persisting store announces its writes ---
+const storeDir = join(here, '../src/stores');
+const stores = readdirSync(storeDir).filter(f => /^use[A-Za-z]+Store\.js$/.test(f));
+check('found the store modules', stores.length >= 11);
+for (const f of stores) {
+  const s = readFileSync(join(storeDir, f), 'utf8');
+  const persists = /localStorage\.setItem\(/.test(s);
+  if (!persists) { check(`${f}: no localStorage writes, nothing to announce`, true); continue; }
+  check(`${f}: imports notifyLocalWrite and DOMAINS from ../syncBus`,
+    /import \{ notifyLocalWrite, DOMAINS \} from '\.\.\/syncBus'/.test(s));
+  const calls = [...s.matchAll(/notifyLocalWrite\(DOMAINS\.([A-Z_]+)\)/g)].map(m => m[1]);
+  check(`${f}: calls notifyLocalWrite with a DOMAINS member`, calls.length >= 1 && calls.every(k => DOMAIN_KEYS.includes(k)));
+  check(`${f}: never notifies with a string literal`, !/notifyLocalWrite\(['"]/.test(s));
+  check(`${f}: imports neither sync.js nor firebase.js`, !/from '\.\.\/(sync|firebase)'/.test(s));
+  // The save function (function save*) must contain the call. The seed and
+  // migration writes inside load* functions are deliberately exempt: they run
+  // at module load, before startSync, and the startup run pushes them.
+  const saveFns = [...s.matchAll(/^function save\w*\([^)]*\) \{[\s\S]*?^\}/gm)].map(m => m[0]);
+  if (saveFns.length) {
+    check(`${f}: every save function announces the write`, saveFns.every(fn => /notifyLocalWrite\(/.test(fn)));
+  } else {
+    // pokes persists inline in increment()
+    check(`${f}: the inline persist announces the write`, /localStorage\.setItem\([^\n]*\n\s*notifyLocalWrite\(/.test(s));
+  }
+}
+
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed ? 1 : 0);

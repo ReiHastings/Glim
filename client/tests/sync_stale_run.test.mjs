@@ -34,13 +34,14 @@
 //           gate; session ends; neither glim-pokes nor glim-settings is written.
 //     R6  - non-regression: two overlapping syncAll under one live session both
 //           complete, the final state equals a single run's, and staleSkips is 0.
-//     R7  - flushSync (tab-hide): its first push is held; account switch; the
+//     R7  - flushWriteOnce (tab-hide): its first push is held; account switch; the
 //           remaining three pushes must not run (they would read the NEXT user's
 //           rows and push them under the previous uid).
 //     R8  - same-user sign-out and sign-in with a run held across it: the held
 //           run is discarded (uids match; generations do not).
-//   The test uses the public API only (startSync, stopSync, syncAll), so it is
-//   indifferent to HOW the guard is implemented.
+//   The test uses the public API (startSync, stopSync, flushWriteOnce) plus
+//   syncAll through the __test seam (private since the 2026-09-10 scheduler),
+//   so it is indifferent to HOW the guard is implemented.
 //
 // usage:
 //   cd client && node --import ./tests/register-sync-mocks.mjs tests/sync_stale_run.test.mjs
@@ -56,7 +57,7 @@ globalThis.localStorage = {
   get length() { return mem.size; },
 };
 let dispatched = 0;                   // notify() -> window.dispatchEvent
-globalThis.window = { dispatchEvent: () => { dispatched++; } };
+globalThis.window = { dispatchEvent: () => { dispatched++; }, addEventListener: () => {}, removeEventListener: () => {} };
 // startSync registers a visibilitychange handler; stopSync removes it.
 globalThis.document = { hidden: false, addEventListener: () => {}, removeEventListener: () => {} };
 if (typeof globalThis.CustomEvent === 'undefined') {
@@ -67,7 +68,8 @@ console.info = () => {};              // the guard logs each discarded run; keep
 
 import * as FS from './mocks/firestore.mock.mjs';
 const sync = await import('../src/sync.js');
-const { startSync, stopSync, syncAll } = sync;
+const { startSync, stopSync } = sync;
+const { syncAll } = sync.__test;
 
 let passed = 0, failed = 0;
 function check(name, cond) {
@@ -295,13 +297,13 @@ console.log('R6: two overlapping syncAll under one live session (non-regression)
   FS.__clearHooks();
 }
 
-// ===== R7: flushSync (tab-hide) - session ends during its FIRST push =====
-// flushSync runs four pushEntries calls in sequence. The helper captures its own
-// generation at entry, which for calls 2-4 is AFTER an await, so flushSync must
+// ===== R7: flushWriteOnce (tab-hide) - session ends during its FIRST push =====
+// flushWriteOnce runs four pushEntries calls in sequence. The helper captures its own
+// generation at entry, which for calls 2-4 is AFTER an await, so flushWriteOnce must
 // capture and check itself. Found by the 2026-09-10 code review: without that,
 // a held first push followed by an account switch made calls 2-4 read the NEXT
 // user's rows and push them under the previous uid.
-console.log('R7: flushSync stopped during its first push');
+console.log('R7: flushWriteOnce stopped during its first push');
 {
   FS.__reset(); mem = new Map(); dispatched = 0;
   mem.set('glim-uid', 'A');
@@ -312,7 +314,7 @@ console.log('R7: flushSync stopped during its first push');
                                           { id: 'j2', createdAt: iso(9_999_999_999_999), text: 'b', deletedAt: null }]));
   const { release, reached } = hold(FS.__setWriteGate, 'users/A/journal/j2');
 
-  const flush = sync.flushSync(); // tab-hide path, first push (j2) held
+  const flush = sync.flushWriteOnce(); // tab-hide path, first push (j2) held
   await reached;
 
   stopSync();

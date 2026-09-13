@@ -21,6 +21,7 @@
 // -----------------------------------------------------------------------------
 
 import { create } from 'zustand';
+import { notifyLocalWrite, DOMAINS } from '../syncBus';
 import { LEGACY_CATEGORY_IDS, DEFAULT_CATEGORY_ID } from '../utils/symptomCategories';
 
 const STORAGE_KEY = 'glim-symptoms-library';
@@ -80,6 +81,7 @@ function loadLibrary() {
 function saveLibrary(state) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ items: state.items }));
+    notifyLocalWrite(DOMAINS.SYMPTOMS_LIBRARY);
   } catch { /* ignore */ }
 }
 

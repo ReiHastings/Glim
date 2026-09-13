@@ -14,6 +14,7 @@
 // -----------------------------------------------------------------------------
 
 import { create } from 'zustand';
+import { notifyLocalWrite, DOMAINS } from '../syncBus';
 import { todayStr } from '../utils/dateUtils';
 
 const STORAGE_KEY = 'glim-nutrition-library';
@@ -35,6 +36,7 @@ function loadLibrary() {
 function saveLibrary(state) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ items: state.items }));
+    notifyLocalWrite(DOMAINS.NUTRITION_LIBRARY);
   } catch { /* ignore */ }
 }
 
