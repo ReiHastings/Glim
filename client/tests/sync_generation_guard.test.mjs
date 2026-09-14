@@ -54,8 +54,11 @@ check('stopSync bumps the generation', /generation\+\+/.test(stopBody));
 // out and awaits; the five one-line mutable wrappers delegate to
 // syncUpdatedAtCollection; the scheduler's flushSync only waits and delegates
 // to runSync. All exemptions are verified below.
+// pushEntries (2026-09-13) captures the generation and delegates the loop to
+// pushWriteOnce, which takes it as a parameter (checked below like touchSignal).
 const DELEGATES = new Set(['syncAll', 'syncSymptoms', 'syncSymptomsLibrary',
   'syncSymptomsCategories', 'syncSymptomClearDays', 'syncNutritionLibrary', 'flushSync']);
+const PARAM_GUARDED = new Set(['pushEntries']);
 const decl = /^(?:export )?async function (\w+)\(/gm;
 const names = [];
 for (const m of src.matchAll(decl)) names.push({ name: m[1], at: m.index });
@@ -84,7 +87,29 @@ for (let i = 0; i < names.length; i++) {
   // First statement after the signature line must be the capture.
   const firstStmt = body.split('\n').slice(1).map(l => l.trim()).find(l => l && !l.startsWith('//'));
   check(`${n.name}: first statement captures the generation`, /^const gen\s*=\s*generation;/.test(firstStmt ?? ''));
-  check(`${n.name}: checks stale(gen, ...) at least once`, /stale\(gen,/.test(body));
+  if (PARAM_GUARDED.has(n.name)) {
+    check(`${n.name}: passes the captured generation to pushWriteOnce`, /pushWriteOnce\(uid, cfg, list, gen,/.test(body));
+  } else {
+    check(`${n.name}: checks stale(gen, ...) at least once`, /stale\(gen,/.test(body));
+  }
+}
+
+// Helpers called AFTER a caller's first await take the run generation as a
+// PARAMETER and check it before their post-await write (spec 4.6, review M-9):
+// a fresh `const gen = generation` inside them would capture the CURRENT
+// generation and pass a stale check for a run that should be discarded.
+for (const [fn, sig, write] of [
+  ['pushWriteOnce',    'async function pushWriteOnce(uid, cfg, rows, gen, label, skip = null)', 'setDoc('],
+  ['backfillSyncedAt', 'async function backfillSyncedAt(ref, ids, gen, label)',    'batch.commit('],
+  ['settlePull',       'async function settlePull(cfg, pull, rows, confirmed, dataOk, gen, label)', 'advanceCursor('],
+]) {
+  const n = names.find(x => x.name === fn);
+  const next = names[names.indexOf(n) + 1]?.at ?? src.length;
+  const body = n ? src.slice(n.at, next) : '';
+  check(`${fn}: takes gen as a parameter and checks stale(gen, ...) before its write`,
+    n && body.includes(sig) && body.includes('stale(gen,') && body.includes(write)
+      && body.indexOf('stale(gen,') < body.indexOf(write)
+      && !/const gen\s*=\s*generation/.test(body));
 }
 
 // The delegates must really delegate (so their exemption is honest).

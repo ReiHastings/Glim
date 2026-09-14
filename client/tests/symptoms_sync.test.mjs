@@ -27,8 +27,8 @@
 //          any of the five mutable domains, observed at the mock's write hook.
 //    Y10 - a push that fails once is retried on the next sync. The old
 //          watermark gate abandoned such a row forever.
-//    Y11 - the five retired *PushedAt keys are pruned from glim-sync-meta on
-//          startup, and the live write-once watermarks are left alone.
+//    Y11 - all nine retired *PushedAt keys are pruned from glim-sync-meta on
+//          startup (the write-once four joined the list on 2026-09-13).
 //    Y12 - a MALFORMED updatedAt on one side loses to the well-formed side in
 //          both directions, so a corrupt row is healed rather than frozen; two
 //          malformed stamps tie and nothing moves.
@@ -342,7 +342,9 @@ mem = phone;  await syncSymptomClearDays('Q');
 mem = laptop; await syncSymptomClearDays('Q');
 const phoneDoc  = JSON.stringify((phone.get('glim-symptom-days')  && JSON.parse(phone.get('glim-symptom-days')).days[0]));
 const laptopDoc = JSON.stringify((laptop.get('glim-symptom-days') && JSON.parse(laptop.get('glim-symptom-days')).days[0]));
-const remoteDoc = JSON.stringify(FS.__get(`users/Q/symptom-days/${D}`));
+// syncedAt is sync bookkeeping on the server document and is never stored locally (I4).
+const { syncedAt: _sa, ...remoteStored } = FS.__get(`users/Q/symptom-days/${D}`);
+const remoteDoc = JSON.stringify(remoteStored);
 check('Y8: both devices converge to byte-identical documents',
   phoneDoc === laptopDoc && laptopDoc === remoteDoc);
 
@@ -432,7 +434,7 @@ check('Y10: the row is retried and lands on the next sync',
 
 // Steady state: once every row matches, a sync performs zero writes.
 let writes = 0;
-FS.__setWriteHook(() => { writes++; });
+FS.__setWriteHook((p, prev, next) => { if (!FS.__isBackfill(prev, next)) writes++; });
 await syncSymptoms('T');
 FS.__setWriteHook(null);
 check('Y10: a fully synced collection performs zero pushes', writes === 0);
@@ -449,9 +451,10 @@ const metaAfter = JSON.parse(mem.get('glim-sync-meta'));
 check('Y11: all five retired *PushedAt keys are pruned',
   ['nutritionLibraryPushedAt', 'symptomsPushedAt', 'symptomsLibraryPushedAt',
    'symptomsCategoriesPushedAt', 'symptomDaysPushedAt'].every(k => !(k in metaAfter)));
-check('Y11: the four live write-once watermarks are retained untouched',
-  metaAfter.journalPushedAt === ago(5) && metaAfter.waterPushedAt === ago(6) &&
-  metaAfter.stepsPushedAt === ago(7) && metaAfter.nutritionPushedAt === ago(8));
+// 2026-09-13: the four write-once watermarks are retired too (per-row push
+// record, spec R16a); this assertion was inverted deliberately.
+check('Y11: the four write-once *PushedAt keys are pruned as well',
+  ['journalPushedAt', 'waterPushedAt', 'stepsPushedAt', 'nutritionPushedAt'].every(k => !(k in metaAfter)));
 const before = mem.get('glim-sync-meta');
 pruneStaleSyncMeta();
 check('Y11: pruning an already-clean meta is a no-op write',
@@ -485,7 +488,7 @@ FS.__seed('users/M2/symptoms/c2', entry({ id: 'c2', note: 'good-remote', updated
 const corrupt = new Map();
 mem = corrupt; setLogs([entry({ id: 'c2', note: 'garbage-local', updatedAt: 'not-a-date' })]);
 let corruptWrites = 0;
-FS.__setWriteHook(() => { corruptWrites++; });
+FS.__setWriteHook((p, prev, next) => { if (!FS.__isBackfill(prev, next)) corruptWrites++; });
 await syncSymptoms('M2');
 FS.__setWriteHook(null);
 check('Y12: a malformed local copy is replaced by the well-formed remote one',
@@ -498,7 +501,7 @@ FS.__seed('users/M3/symptoms/c3', entry({ id: 'c3', note: 'r', updatedAt: 'x' })
 const both = new Map();
 mem = both; setLogs([entry({ id: 'c3', note: 'l', updatedAt: 'y' })]);
 let bothWrites = 0;
-FS.__setWriteHook(() => { bothWrites++; });
+FS.__setWriteHook((p, prev, next) => { if (!FS.__isBackfill(prev, next)) bothWrites++; });
 await syncSymptoms('M3');
 FS.__setWriteHook(null);
 check('Y12: two malformed stamps tie - no write, no adoption (documented)',
@@ -534,7 +537,10 @@ FS.__setWriteHook((path, prev, next) => {
 });
 
 mem = phoneN; phoneN.set('glim-nutrition', JSON.stringify({ logs: [nLog()] }));
-await flushWriteOnce('N');                                  // tab-hide push, no watermark advance
+// The phone has had its startup run (the record exists, empty); the flush skips
+// a domain that was never seeded (spec R15b).
+phoneN.set('glim-sync-meta', JSON.stringify({ nutritionPushed: {} }));
+await flushWriteOnce('N');                                  // tab-hide push
 check('Y13: the flushed row carries NO deletedAt key on the server',
   FS.__has('users/N/nutrition/n1') && !('deletedAt' in FS.__get('users/N/nutrition/n1')));
 

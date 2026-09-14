@@ -3,7 +3,7 @@
 // Project:     Glim
 // Author:      Reina Hastings (reinahastings13@gmail.com)
 // Created:     2026-03-26
-// Last Modified: 2026-09-10
+// Last Modified: 2026-09-13
 // Purpose:     Background sync service. Pushes localStorage data to Firestore
 //              and pulls remote changes back into localStorage so data stays
 //              in sync across devices. localStorage remains the primary
@@ -61,6 +61,36 @@
 //              check it before each post-await write. Decision Register
 //              2026-09-10.
 //
+//              CURSOR-BOUNDED PULLS and the PER-ROW PUSH RECORD (2026-09-13;
+//              spec docs/glim_handoff_cursor_pulls_2026-09-13.md, revision 6):
+//              every event-log document written to Firestore carries
+//              syncedAt: serverTimestamp(). Each of the nine event-log
+//              domains pulls where('syncedAt', '>', cursor), the cursor being
+//              the newest syncedAt this device has seen for that domain
+//              (glim-sync-meta {domain}PullCursor), with a short query-side
+//              overlap for two minutes after the cursor last moved. A domain
+//              with no cursor performs the old unfiltered pull and, on that
+//              path, backfills syncedAt onto documents that lack it. A quiet
+//              run therefore returns zero documents per domain (billed at
+//              the one-read query minimum) regardless of how many the user
+//              has stored. syncedAt is sync bookkeeping: it is stripped from
+//              every pulled document before it reaches localStorage.
+//
+//              Push decisions no longer use a watermark or the full remote
+//              snapshot. glim-sync-meta {domain}Pushed maps each row id to
+//              the row's MARKER (its modification stamp and deletedAt) as
+//              last confirmed on the server. A row is pushed exactly when its
+//              current marker differs from the recorded one; the record
+//              changes only when a push succeeds or when the merge adopts or
+//              confirms a remote version. No two device clocks are ever
+//              compared on the push side, a failed push is retried until it
+//              lands, an adopted row is never echoed back, and a row the
+//              server holds an older copy of is re-pushed. The mutable helper
+//              still pulls before it pushes and keeps its snapshot gate as a
+//              second guard when the remote row was returned. The write-once
+//              functions now pull before they push too, but still push when
+//              their pull fails (a blind write-once push is safe).
+//
 //              After a pull that changes localStorage, fires a
 //              'glim-data-updated' CustomEvent so DesktopPet can reload.
 //
@@ -77,6 +107,7 @@
 import { db } from './firebase';
 import {
   collection, doc, getDocs, setDoc, getDoc, onSnapshot, serverTimestamp,
+  query, where, Timestamp, writeBatch,
 } from 'firebase/firestore';
 import { onLocalWrite } from './syncBus';
 
@@ -124,37 +155,59 @@ function localGet(key) {
   }
 }
 
+// Returns true when the write landed and false when setItem threw (quota,
+// private mode). Callers that persist bookkeeping AFTER a data write (the pull
+// cursor, R9a) must not advance it when the data write failed, so the failure
+// has to be reported rather than swallowed. Every other caller may ignore it.
 function localSetRaw(key, value) {
   try {
     localStorage.setItem(key, value);
+    return true;
   } catch (e) {
     console.warn('[glim sync] localStorage write failed:', e);
+    return false;
   }
 }
 
 function localSet(key, data) {
-  localSetRaw(key, JSON.stringify(data));
+  return localSetRaw(key, JSON.stringify(data));
 }
 
-// --- Sync metadata (last push time for the four write-once domains only) ---
+// --- Sync metadata (glim-sync-meta) ---
+//
+// One JSON object. Per event-log domain (nine of them) it holds:
+//   {domain}PullCursor       ms of the newest syncedAt pulled (R8), a number
+//   {domain}PullCursorSetAt  device ms when the cursor last CHANGED (R8a)
+//   {domain}Pushed           { rowId: marker } as last confirmed on the server (R15)
+// Every write is a read-modify-write of the whole blob, performed with no await
+// between the read and the write, so it is atomic within one tab. Writers that
+// hold a copy across an await (a domain function mid-run, the tab-hide flush)
+// must therefore merge at write time through the helpers below, never write a
+// copy taken at run start (R15d).
 
 function getSyncMeta() {
   return localGet('glim-sync-meta') ?? {};
 }
 
 function setSyncMeta(updates) {
-  localSet('glim-sync-meta', { ...getSyncMeta(), ...updates });
+  return localSet('glim-sync-meta', { ...getSyncMeta(), ...updates });
 }
 
-// Watermark keys retired on 2026-09-06, when the mutable domains stopped gating
-// their push on a pushedAt stamp and started gating on the remote snapshot
-// instead (see syncUpdatedAtCollection). Nothing reads them any more; they are
-// pruned once per session so glim-sync-meta reflects what the code uses and
-// cannot mislead a future reader into thinking these domains still have a
-// watermark to advance.
+// Watermark keys that nothing reads any more, pruned once per session so
+// glim-sync-meta reflects what the code uses and cannot mislead a future
+// reader into thinking a domain still has a watermark to advance.
+//   2026-09-06: the five mutable domains stopped gating their push on a
+//   pushedAt stamp and started gating on the remote snapshot instead.
+//   2026-09-13: the four write-once domains followed. A run-time watermark
+//   compared each row's stamp (written by whichever device edited the row)
+//   against this device's clock, and every review of the cursor-pull design
+//   found a new failure of that shape. All nine domains now decide by the
+//   per-row record ({domain}Pushed), the row-level form of the 2026-09-06
+//   principle: compare the row against what the server is known to hold.
 const RETIRED_META_KEYS = [
   'nutritionLibraryPushedAt', 'symptomsPushedAt', 'symptomsLibraryPushedAt',
   'symptomsCategoriesPushedAt', 'symptomDaysPushedAt',
+  'journalPushedAt', 'waterPushedAt', 'stepsPushedAt', 'nutritionPushedAt',
 ];
 
 function pruneStaleSyncMeta() {
@@ -163,6 +216,225 @@ function pruneStaleSyncMeta() {
   if (retired.length === 0) return;
   for (const k of retired) delete meta[k];
   localSet('glim-sync-meta', meta);
+}
+
+// --- Event-log domain table ---
+//
+// The nine id-keyed collections that use cursor-bounded pulls and the per-row
+// push record. `stamp` is the row's modification stamp for the marker: the
+// creation stamp for write-once rows (constant after creation, so in practice
+// only deletedAt ever changes a write-once marker), updatedAt for mutable
+// rows. Journal rows written by DesktopPet.saveJournalEntry carry `date` and no
+// createdAt. `metaPrefix` names the glim-sync-meta keys.
+const WRITE_ONCE = Object.freeze({
+  journal:   { collectionName: 'journal',   metaPrefix: 'journal',   storageKey: 'glim-journal',   arrayField: null,      stamp: r => r.createdAt ?? r.date },
+  water:     { collectionName: 'water',     metaPrefix: 'water',     storageKey: 'glim-water',     arrayField: 'entries', stamp: r => r.timestamp },
+  steps:     { collectionName: 'steps',     metaPrefix: 'steps',     storageKey: 'glim-steps',     arrayField: 'entries', stamp: r => r.timestamp },
+  nutrition: { collectionName: 'nutrition', metaPrefix: 'nutrition', storageKey: 'glim-nutrition', arrayField: 'logs',    stamp: r => r.createdAt },
+});
+// `domain` is the syncBus / debug-log name (equal to the collection name for
+// these five; the static wiring test reads it from here).
+const MUTABLE = Object.freeze({
+  'nutrition-library': { collectionName: 'nutrition-library', domain: 'nutrition-library', metaPrefix: 'nutritionLibrary',   storageKey: 'glim-nutrition-library',   arrayField: 'items', stamp: r => r.updatedAt },
+  'symptoms':          { collectionName: 'symptoms',          domain: 'symptoms',          metaPrefix: 'symptoms',           storageKey: 'glim-symptoms',            arrayField: 'logs',  stamp: r => r.updatedAt },
+  'symptoms-library':  { collectionName: 'symptoms-library',  domain: 'symptoms-library',  metaPrefix: 'symptomsLibrary',    storageKey: 'glim-symptoms-library',    arrayField: 'items', stamp: r => r.updatedAt },
+  'symptom-categories':{ collectionName: 'symptom-categories',domain: 'symptom-categories',metaPrefix: 'symptomsCategories', storageKey: 'glim-symptoms-categories', arrayField: 'items', stamp: r => r.updatedAt },
+  'symptom-days':      { collectionName: 'symptom-days',      domain: 'symptom-days',      metaPrefix: 'symptomDays',        storageKey: 'glim-symptom-days',        arrayField: 'days',  stamp: r => r.updatedAt },
+});
+const EVENT_LOG_DOMAINS = Object.freeze([...Object.values(WRITE_ONCE), ...Object.values(MUTABLE)]);
+
+const cursorKey = (cfg) => `${cfg.metaPrefix}PullCursor`;
+const setAtKey  = (cfg) => `${cfg.metaPrefix}PullCursorSetAt`;
+const recordKey = (cfg) => `${cfg.metaPrefix}Pushed`;
+
+// The local rows of a domain as stored (a bare array for journal, a field of a
+// wrapper object otherwise). Malformed storage reads as empty.
+function localRows(cfg) {
+  const raw = localGet(cfg.storageKey);
+  const arr = cfg.arrayField === null ? raw : raw?.[cfg.arrayField];
+  return Array.isArray(arr) ? arr.filter(r => r && typeof r === 'object') : [];
+}
+
+// --- syncedAt: server-assigned sync stamp on every event-log document (R1, R2) ---
+//
+// Written on every push and backfill; never stored locally. It comes back as a
+// Firestore Timestamp, which nothing local needs and which JSON.stringify would
+// mangle. withSyncedAt OVERRIDES any value already on the payload (a row that
+// leaked a Timestamp object into localStorage during a mixed-version deploy
+// must not write it back as a map) and never mutates its input.
+function withSyncedAt(payload) {
+  return { ...payload, syncedAt: serverTimestamp() };
+}
+
+function stripSyncedAt(data) {
+  if (!data || typeof data !== 'object' || !('syncedAt' in data)) return data;
+  const { syncedAt: _omit, ...rest } = data;
+  return rest;
+}
+
+// ms of a pulled syncedAt, or null when absent, pending (own write read back
+// from cache before the server resolved it), or not a Timestamp at all (a
+// string or map written by a bug or an old build). Null values never take part
+// in cursor math, and on the legacy path they mark the document for backfill.
+function syncedAtMs(v) {
+  return v && typeof v.toMillis === 'function' ? v.toMillis() : null;
+}
+
+// --- Pull cursor (R5-R10) ---
+//
+// The persisted cursor is EXACTLY the newest syncedAt seen; nothing is ever
+// subtracted from it (a cursor set to max minus an overlap pins itself at the
+// newest document and re-reads everything near it forever, review C-2). The
+// overlap lives on the query side only, and only while the cursor is fresh:
+// for OVERLAP_WINDOW_MS after the cursor last moved, the query lower bound is
+// cursor - OVERLAP_MS, which catches a write whose server stamp preceded an
+// earlier read but whose commit landed after it (serverTimestamp is the
+// request-processing time, not the commit time; review M-A). After the window
+// a quiet domain returns zero documents. Same-device elapsed time only: a
+// skewed clock changes the window length, never what is read.
+const OVERLAP_MS        = 10_000;
+const OVERLAP_WINDOW_MS = 120_000;
+
+// A cursor is present only when it is a finite number; anything else (absent,
+// NaN from a corrupt blob, a string) means the legacy full pull (R7).
+function getCursor(cfg) {
+  const v = getSyncMeta()[cursorKey(cfg)];
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+// Advance the cursor after a pull (R8). Read-modify-write against the STORED
+// value, not one captured at run start (R15d). Returns nothing.
+function advanceCursor(cfg, pull) {
+  if (pull.rows.length === 0) return;
+  const meta  = getSyncMeta();
+  const old   = meta[cursorKey(cfg)];
+  const oldOk = typeof old === 'number' && Number.isFinite(old);
+  // A legacy pull that returned rows but not one stamped one (before backfill):
+  // set 0 so the next run's bounded pull returns everything now carrying the
+  // field. One extra full read per domain per device, once.
+  const target = pull.maxMs === null ? 0 : pull.maxMs;
+  const next   = oldOk ? Math.max(old, target) : target;
+  if (oldOk && next === old) return;                       // unchanged: SetAt stays
+  setSyncMeta({ [cursorKey(cfg)]: next, [setAtKey(cfg)]: Date.now() });
+}
+
+// --- Per-row push record (R15, R15d) ---
+//
+// rowMarker is a pure function of the row. Two rows with the same stamp fields
+// have the same marker; any edit, hide, archive, delete or revive changes it
+// (every store bumps updatedAt on those, and deletedAt is part of the marker
+// regardless).
+function rowMarker(cfg, row) {
+  return `${cfg.stamp(row) ?? ''}|${row.deletedAt ?? ''}`;
+}
+
+// The record is the marker of what the SERVER is known to hold per row. Set
+// on a successful push (the pushed form) and at merge time for every returned
+// row (the server's form after the merge). Absent for a row the server has
+// never confirmed.
+//
+// The stored record, or undefined when this device has never seeded the domain.
+function getRecord(cfg) {
+  const r = getSyncMeta()[recordKey(cfg)];
+  return r && typeof r === 'object' && !Array.isArray(r) ? r : undefined;
+}
+
+// Merge `entries` (Map id -> marker) into the STORED record at write time and,
+// when `keepIds` is given, drop every id not in it (rows hard-deleted by
+// reset-all-data). Never replaces the record with a copy taken before an
+// await: the tab-hide flush and an overlapping run both write the same key.
+function recordPushed(cfg, entries, keepIds = null) {
+  const cur = { ...(getRecord(cfg) ?? {}) };
+  for (const [id, marker] of entries) cur[id] = marker;
+  if (keepIds) for (const id of Object.keys(cur)) if (!keepIds.has(id)) delete cur[id];
+  setSyncMeta({ [recordKey(cfg)]: cur });
+}
+
+// Rows whose marker differs from the record: the push set (R15). Evaluated on
+// the rows as they stand after the merge, which is what makes an adopted row
+// (recorded at adoption) invisible here. `confirmed` is consulted only when
+// the data write FAILED (settlePull then recorded nothing): rows the server is
+// known to hold must not be pushed and recorded from the in-memory merge that
+// never reached disk, or the next run would treat them as pushed.
+function unrecorded(cfg, rows, confirmed = null) {
+  const record = getRecord(cfg) ?? {};
+  return rows.filter(r => !confirmed?.has(String(r.id)) && record[String(r.id)] !== rowMarker(cfg, r));
+}
+
+// --- Bounded pull, backfill, and the post-pull settlement (R6-R12, R15d) ---
+
+// One getDocs for an event-log domain: bounded by the cursor when one exists,
+// the whole collection otherwise. Returns the stripped rows plus what the
+// caller needs to settle afterwards. Throws when getDocs throws (the caller
+// decides whether to push anyway).
+async function pullBounded(uid, cfg) {
+  const ref    = collection(db, 'users', uid, cfg.collectionName);
+  const cursor = getCursor(cfg);
+  const legacy = cursor === undefined;
+  let target = ref;
+  if (!legacy) {
+    const setAt = getSyncMeta()[setAtKey(cfg)];
+    const fresh = typeof setAt === 'number' && Date.now() - setAt < OVERLAP_WINDOW_MS;
+    const lower = fresh ? cursor - OVERLAP_MS : cursor;
+    target = query(ref, where('syncedAt', '>', Timestamp.fromMillis(lower)));
+  }
+  const snapshot = await getDocs(target);
+  const rows = [], unstamped = [];
+  let maxMs = null;
+  snapshot.forEach(d => {
+    const raw = d.data();
+    const ms  = syncedAtMs(raw.syncedAt);
+    if (ms === null) unstamped.push(d.id);
+    else if (maxMs === null || ms > maxMs) maxMs = ms;
+    rows.push({ id: d.id, data: stripSyncedAt(raw) });
+  });
+  return { ref, rows, legacy, size: snapshot.size, maxMs, unstamped };
+}
+
+// Stamp syncedAt onto documents that lack it (or carry a non-Timestamp value),
+// in batches of at most 500 (Firestore's limit). Firestore-only: touches no
+// other field and no localStorage. Takes the run generation as a parameter
+// because it runs after the caller's first await (a fresh capture here would
+// pass a stale check). Returns { ok, stamped }; ok is false when any batch
+// failed, in which case the caller must NOT set the cursor (R12).
+async function backfillSyncedAt(ref, ids, gen, label) {
+  let ok = true, stamped = 0;
+  for (let i = 0; i < ids.length; i += 500) {
+    if (stale(gen, label)) return { ok: false, stamped };
+    const chunk = ids.slice(i, i + 500);
+    const batch = writeBatch(db);
+    for (const id of chunk) batch.set(doc(ref, id), { syncedAt: serverTimestamp() }, { merge: true });
+    try {
+      await batch.commit();
+      stamped += chunk.length;
+    } catch (e) {
+      ok = false;
+      console.warn(`[glim sync] ${label} backfill batch failed:`, e);
+    }
+  }
+  return { ok, stamped };
+}
+
+// After the merged data has been written: backfill (legacy path), then cursor,
+// then adoption records, in that order (R15d steps 2-4). `confirmed` is the Map
+// of id -> marker for rows the merge adopted from remote or found equal to it;
+// `rows` is the full post-merge local list (for pruning); `dataOk` is whether
+// the data write landed (when it did not, the cursor is held so the window is
+// re-read, and adoptions are left unrecorded so they are re-adopted). Returns
+// false when the session ended mid-way, true otherwise, plus the backfill
+// count for the log line.
+async function settlePull(cfg, pull, rows, confirmed, dataOk, gen, label) {
+  let backfilled = 0, backfillOk = true;
+  if (pull.legacy && pull.unstamped.length > 0) {
+    const r = await backfillSyncedAt(pull.ref, pull.unstamped, gen, label);
+    backfilled = r.stamped; backfillOk = r.ok;
+    if (stale(gen, label)) return { live: false, backfilled };
+  }
+  if (dataOk) {
+    if (backfillOk) advanceCursor(cfg, pull);
+    recordPushed(cfg, confirmed, new Set(rows.map(r => String(r.id))));
+  }
+  return { live: true, backfilled };
 }
 
 // Millisecond value of an ISO timestamp; 0 when absent, NaN when malformed.
@@ -228,9 +500,12 @@ function notify(domains) {
 // "did this run push anything": the scheduler touches the signal document
 // only when it is greater than zero. docsRead is snapshot.size for a getDocs
 // pull and 1 for a getDoc singleton. Firestore bills at least one read per
-// query, so the billed figure for an EMPTY collection is 1, not the 0 logged
-// here. docsPushed counts setDoc calls attempted, whether or not they
-// succeeded.
+// query, so the billed figure for an EMPTY result is 1, not the 0 logged here.
+// docsPushed counts setDoc calls that SUCCEEDED (since 2026-09-13; a push the
+// server rejects on every run must not wake the other devices on every run).
+// Backfill writes are reported separately as docsBackfilled and do not count
+// toward runPushed: they change no user data, so they are not a reason to
+// wake anyone (R12a).
 //
 // Logging is off by default. Set localStorage 'glim-debug-sync' to '1'
 // (devtools, no rebuild or reload needed) to log one line per domain per run,
@@ -242,12 +517,12 @@ function debugSyncEnabled() {
   catch { return false; }
 }
 
-function recordDomain(domain, docsRead, docsPushed) {
+function recordDomain(domain, docsRead, docsPushed, extra = null) {
   runPushed += docsPushed;
-  if (debugSyncEnabled()) console.debug('[glim sync]', { domain, docsRead, docsPushed });
+  if (debugSyncEnabled()) console.debug('[glim sync]', { domain, docsRead, docsPushed, ...(extra ?? {}) });
 }
 
-// --- Write-once push helpers (shared by full sync and flushSync) ---
+// --- Write-once push helpers (shared by full sync and flushWriteOnce) ---
 //
 // These operate ONLY on the four WRITE-ONCE event-log domains (journal, water,
 // steps, nutrition logs). Blind-pushing one of their rows is safe for two
@@ -257,126 +532,120 @@ function recordDomain(domain, docsRead, docsPushed) {
 // itself. Being id-keyed alone is NOT sufficient - the mutable domains are also
 // id-keyed and are unsafe to blind-push (see syncUpdatedAtCollection).
 //
-// The push-filter functions are module-scoped so the full sync functions and
-// flushSync share one definition (no drift). pushEntries deliberately does NOT
-// advance the pushedAt watermark: flushSync runs opportunistically (tab-hide,
-// possibly offline), and advancing the watermark on a push that silently failed
-// would skip that entry on the next real sync. Re-pushing on the next syncAll is
-// idempotent (setDoc merge by id), so not advancing here only costs a harmless
-// re-push.
+// One push loop serves the full sync and the flush, so the two cannot drift.
+// It takes the run generation as a PARAMETER: it is always called after its
+// caller's first await, where a fresh capture would pass a stale check
+// (the pushEntries bug of 2026-09-10). Each successful setDoc is recorded at
+// once, by write-time merge, so a session ending or a flush overlapping
+// mid-loop loses nothing already confirmed.
 
-function journalNeedsPush(e, last) {
-  const created = new Date(e.createdAt || e.date || 0);
-  const deleted = e.deletedAt ? new Date(e.deletedAt) : null;
-  return created > last || (deleted && deleted > last);
-}
-
-function stepsEntryNeedsPush(e, last) {
-  return new Date(e.timestamp) > last;
-}
-
-// Water entries: shared by syncWater and flushSync so the soft-delete-aware
-// filter lives in exactly one place.
-function waterEntryNeedsPush(e, last) {
-  const created = new Date(e.timestamp);
-  const deleted = e.deletedAt ? new Date(e.deletedAt) : null;
-  return created > last || (deleted && deleted > last);
-}
-
-function nutritionLogNeedsPush(e, last) {
-  const created = new Date(e.createdAt || 0);
-  const deleted = e.deletedAt ? new Date(e.deletedAt) : null;
-  return created > last || (deleted && deleted > last);
-}
-
-async function pushEntries(uid, collectionName, list, lastPushedAt, needsPush) {
-  const gen = generation;
-  const ref = collection(db, 'users', uid, collectionName);
-  const toPush = list.filter(e => needsPush(e, lastPushedAt));
-  for (const entry of toPush) {
-    if (stale(gen, collectionName)) return;   // each iteration awaits
+async function pushWriteOnce(uid, cfg, rows, gen, label, skip = null) {
+  const ref = collection(db, 'users', uid, cfg.collectionName);
+  let pushed = 0;
+  for (const entry of unrecorded(cfg, rows, skip)) {
+    if (stale(gen, label)) return pushed;   // each iteration awaits
     try {
-      await setDoc(doc(ref, String(entry.id)), writeOncePayload(entry), { merge: true });
+      await setDoc(doc(ref, String(entry.id)), withSyncedAt(writeOncePayload(entry)), { merge: true });
     } catch (e) {
-      console.warn(`[glim flush] ${collectionName} push failed:`, entry.id, e);
+      console.warn(`[glim sync] ${label} push failed:`, entry.id, e);
+      continue;                              // record untouched: retried next run
+    }
+    if (stale(gen, label)) return pushed;
+    recordPushed(cfg, new Map([[String(entry.id), rowMarker(cfg, entry)]]));
+    pushed += 1;
+  }
+  return pushed;
+}
+
+// The flush's entry point per domain. A domain this device has never seeded
+// (no record key: first run of this build, a new device, after reset or
+// account switch) is skipped: every row would look unpushed and the flush
+// would re-push the whole domain. The startup run seeds it; from then on the
+// flush pushes only what the record does not hold.
+async function pushEntries(uid, collectionName, list) {
+  const gen = generation;
+  const cfg = WRITE_ONCE[collectionName];
+  if (getRecord(cfg) === undefined) return 0;
+  return pushWriteOnce(uid, cfg, list, gen, `flush:${collectionName}`);
+}
+
+// Merge for the three write-once domains that carry deletedAt (journal, water,
+// nutrition logs): add rows absent locally; propagate a remote deletedAt that
+// is newer than the local one; never clear one. Mutates the local rows in
+// place (as before) and returns { toAdd, updated, confirmed }, where confirmed
+// maps each returned id to the marker of what the SERVER holds after the
+// merge: the local form for rows adopted, rows whose remote deletedAt was
+// copied, and rows equal to their remote copy; the REMOTE form for a row local
+// is strictly newer than (a deletedAt the server lacks). Recording the remote
+// marker in that last case is what makes the push loop send the local row even
+// when an earlier push of it had already been recorded (the E6 race: the
+// server regressed underneath a confirmed push).
+function mergeWriteOnce(cfg, entries, pull) {
+  const localById = new Map(entries.map(e => [String(e.id), e]));
+  const toAdd = [], confirmed = new Map();
+  let updated = false;
+  for (const { id, data: remote } of pull.rows) {
+    const localE = localById.get(id);
+    if (!localE) {
+      toAdd.push(remote);
+      confirmed.set(id, rowMarker(cfg, remote));
+    } else if (remote.deletedAt && (!localE.deletedAt || new Date(remote.deletedAt) > new Date(localE.deletedAt))) {
+      localE.deletedAt = remote.deletedAt;
+      updated = true;
+      confirmed.set(id, rowMarker(cfg, localE));
+    } else {
+      confirmed.set(id, rowMarker(cfg, remote));   // equal, or local strictly newer
     }
   }
+  return { toAdd, updated, confirmed };
 }
 
 // =============================================================================
 //  Journal sync
 //  Strategy: event-log merge. One Firestore doc per entry.
 //  Firestore path: users/{uid}/journal/{entryId}
-//  Push: entries created/soft-deleted after lastPushedAt
-//  Pull: entries in Firestore not present in localStorage, plus soft-deletes
-//        for entries present on both sides (newer remote deletedAt wins)
+//  Pull: bounded by journalPullCursor (full pull when absent); rows absent
+//        locally are added, a newer remote deletedAt is propagated
+//  Push: rows whose marker differs from the journalPushed record
 // =============================================================================
 
 async function syncJournal(uid) {
   const gen = generation;
-  const meta = getSyncMeta();
-  const lastPushedAt = meta.journalPushedAt ? new Date(meta.journalPushedAt) : new Date(0);
-
+  const cfg = WRITE_ONCE.journal;
   const rawEntries = localGet('glim-journal');
   const entries = Array.isArray(rawEntries) ? rawEntries : [];
 
-  const journalRef = collection(db, 'users', uid, 'journal');
-
-  // --- PUSH: entries that are new or newly soft-deleted since last push ---
-  const toPush = entries.filter(e => journalNeedsPush(e, lastPushedAt));
-
-  for (const entry of toPush) {
-    if (stale(gen, 'journal')) return;
-    try {
-      await setDoc(doc(journalRef, String(entry.id)), writeOncePayload(entry), { merge: true });
-    } catch (e) {
-      console.warn('[glim sync] journal push failed for entry:', entry.id, e);
-    }
-  }
-
-  // --- PULL: Firestore entries not in localStorage ---
-  let snapshot;
+  // --- PULL (bounded when a cursor exists). A failed read does not block
+  //     the push: a blind write-once push is safe (R15a). ---
+  let pull;
   try {
-    snapshot = await getDocs(journalRef);
+    pull = await pullBounded(uid, cfg);
   } catch (e) {
     console.warn('[glim sync] journal pull failed:', e);
+    if (stale(gen, 'journal')) return;
+    recordDomain('journal', 0, await pushWriteOnce(uid, cfg, entries, gen, 'journal'));
     return;
   }
-
-  // Add entries missing locally, and propagate soft-deletes for entries present
-  // on both sides (an entry deleted on another device carries a newer
-  // deletedAt). Ported from syncWater on 2026-09-08: journal was the first sync
-  // domain and predated that branch, so a journal delete reached the server but
-  // never reached a second device that already held the entry.
-  const localById = new Map(entries.map(e => [String(e.id), e]));
-  const toAdd = [];
-  let updated = false;
-
-  snapshot.forEach(d => {
-    const remote = d.data();
-    const localE = localById.get(d.id);
-    if (!localE) {
-      toAdd.push(remote);
-    } else if (remote.deletedAt && (!localE.deletedAt || new Date(remote.deletedAt) > new Date(localE.deletedAt))) {
-      localE.deletedAt = remote.deletedAt;
-      updated = true;
-    }
-  });
-
   if (stale(gen, 'journal')) return;
+
+  // --- MERGE: add rows missing locally, propagate newer soft-deletes ---
+  const { toAdd, updated, confirmed } = mergeWriteOnce(cfg, entries, pull);
+  let merged = entries, dataOk = true;
   if (toAdd.length > 0 || updated) {
-    const merged = [...entries, ...toAdd].sort(
+    merged = [...entries, ...toAdd].sort(
       (a, b) => new Date(b.createdAt || b.date || 0) - new Date(a.createdAt || a.date || 0)
     );
-    localSet('glim-journal', merged);
-    notify(['journal']);
+    dataOk = localSet('glim-journal', merged);
+    if (dataOk) notify(['journal']);
   }
 
-  // Always advance pushedAt, even when there was nothing to push locally.
-  // A device that only pulled remote entries would otherwise keep lastPushedAt
-  // at epoch and re-push all pulled entries on the next cycle.
-  setSyncMeta({ journalPushedAt: new Date().toISOString() });
-  recordDomain('journal', snapshot.size, toPush.length);
+  // --- SETTLE: backfill (legacy path), cursor, adoption records ---
+  const settled = await settlePull(cfg, pull, merged, confirmed, dataOk, gen, 'journal');
+  if (!settled.live) return;
+
+  // --- PUSH: rows the record does not hold in their current form ---
+  const pushed = await pushWriteOnce(uid, cfg, merged, gen, 'journal', dataOk ? null : confirmed);
+  recordDomain('journal', pull.size, pushed, { docsBackfilled: settled.backfilled });
 }
 
 // =============================================================================
@@ -467,19 +736,17 @@ async function syncSettings(uid) {
 
 // =============================================================================
 //  Water sync
-//  Entries strategy: additive merge. One Firestore doc per entry.
-//  Firestore path: users/{uid}/water/{entryId}
-//  Push: entries created after waterPushedAt
-//  Pull: entries in Firestore not present in localStorage
+//  Entries strategy: additive merge + soft-delete propagation. One Firestore
+//  doc per entry. Path: users/{uid}/water/{entryId}. Pull bounded by
+//  waterPullCursor; push by the waterPushed record.
 //
 //  Config strategy: last-write-wins by configUpdatedAt.
 //  Firestore path: users/{uid}/water-config/current
 // =============================================================================
 
 async function syncWater(uid) {
-  const gen          = generation;
-  const meta         = getSyncMeta();
-  const lastPushedAt = meta.waterPushedAt ? new Date(meta.waterPushedAt) : new Date(0);
+  const gen = generation;
+  const cfg = WRITE_ONCE.water;
 
   let local;
   try {
@@ -488,51 +755,26 @@ async function syncWater(uid) {
   } catch {
     return;
   }
+  const entries = Array.isArray(local.entries) ? local.entries : [];
 
-  const entries    = Array.isArray(local.entries) ? local.entries : [];
-  const entriesRef = collection(db, 'users', uid, 'water');
-
-  // --- PUSH: entries created or soft-deleted since last push ---
-  const toPush = entries.filter(e => waterEntryNeedsPush(e, lastPushedAt));
-
-  for (const entry of toPush) {
-    if (stale(gen, 'water')) return;
-    try {
-      await setDoc(doc(entriesRef, String(entry.id)), writeOncePayload(entry), { merge: true });
-    } catch (e) {
-      console.warn('[glim sync] water entry push failed:', entry.id, e);
-    }
-  }
-
-  // --- PULL: Firestore entries not in local ---
-  let snapshot;
+  // --- PULL entries (bounded); a failed read still pushes (R15a) ---
+  let pull;
   try {
-    snapshot = await getDocs(entriesRef);
+    pull = await pullBounded(uid, cfg);
   } catch (e) {
     console.warn('[glim sync] water pull failed:', e);
+    if (stale(gen, 'water')) return;
+    recordDomain('water', 0, await pushWriteOnce(uid, cfg, entries, gen, 'water'));
     return;
   }
+  if (stale(gen, 'water')) return;
 
-  // Add entries missing locally, and propagate soft-deletes for entries present
-  // on both sides (a bottle undone on another device carries a newer deletedAt).
-  const localById = new Map(entries.map(e => [String(e.id), e]));
-  const toAdd = [];
-  let updated = false;
-  snapshot.forEach(d => {
-    const remote = d.data();
-    const localE = localById.get(d.id);
-    if (!localE) {
-      toAdd.push(remote);
-    } else if (remote.deletedAt && (!localE.deletedAt || new Date(remote.deletedAt) > new Date(localE.deletedAt))) {
-      localE.deletedAt = remote.deletedAt;
-      updated = true;
-    }
-  });
-
-  let changed = false;
+  // --- MERGE entries ---
+  const { toAdd, updated, confirmed } = mergeWriteOnce(cfg, entries, pull);
+  let merged = entries, changed = false;
   if (toAdd.length > 0 || updated) {
-    const merged = [...entries, ...toAdd].sort((a, b) => a.timestamp - b.timestamp);
-    local = { ...local, entries: merged };
+    merged  = [...entries, ...toAdd].sort((a, b) => a.timestamp - b.timestamp);
+    local   = { ...local, entries: merged };
     changed = true;
   }
 
@@ -564,35 +806,35 @@ async function syncWater(uid) {
 
   // Reached after the config getDoc even when that read failed and was caught.
   if (stale(gen, 'water')) return;
+  let dataOk = true;
   if (changed) {
-    localSet('glim-water', local);
-    notify(['water']);
+    dataOk = localSet('glim-water', local);
+    if (dataOk) notify(['water']);
   }
 
-  // Always advance pushedAt, even when there was nothing to push locally.
-  // A device that only pulled remote entries would otherwise keep lastPushedAt
-  // at epoch and re-push all pulled entries on the next cycle.
-  setSyncMeta({ waterPushedAt: new Date().toISOString() });
-  // Reads: the entries getDocs plus the one water-config getDoc.
-  recordDomain('water', snapshot.size + 1, toPush.length + configPushed);
+  // --- SETTLE, then PUSH entries ---
+  const settled = await settlePull(cfg, pull, merged, confirmed, dataOk, gen, 'water');
+  if (!settled.live) return;
+  const pushed = await pushWriteOnce(uid, cfg, merged, gen, 'water', dataOk ? null : confirmed);
+  // Reads: the entries query plus the one water-config getDoc.
+  recordDomain('water', pull.size + 1, pushed + configPushed, { docsBackfilled: settled.backfilled });
 }
 
 // =============================================================================
 //  Steps sync
 //  Entries strategy: additive merge. One Firestore doc per entry.
 //  Firestore path: users/{uid}/steps/{entryId}
-//  Push: entries created after stepsPushedAt
-//  Pull: entries in Firestore not present in localStorage
+//  Pull bounded by stepsPullCursor; push by the stepsPushed record.
 //
 //  Replace-style resolution (latest entry per date wins) happens in the store's
 //  derived value layer (countForDate), not here. The sync layer is purely
-//  additive - it only adds missing entries, never removes or overwrites.
+//  additive - it only adds missing entries, never removes or overwrites. Steps
+//  have no soft-delete, so a row's marker never changes after creation.
 // =============================================================================
 
 async function syncSteps(uid) {
-  const gen          = generation;
-  const meta         = getSyncMeta();
-  const lastPushedAt = meta.stepsPushedAt ? new Date(meta.stepsPushedAt) : new Date(0);
+  const gen = generation;
+  const cfg = WRITE_ONCE.steps;
 
   let local;
   try {
@@ -601,50 +843,40 @@ async function syncSteps(uid) {
   } catch {
     return;
   }
+  const entries = Array.isArray(local.entries) ? local.entries : [];
 
-  const entries    = Array.isArray(local.entries) ? local.entries : [];
-  const entriesRef = collection(db, 'users', uid, 'steps');
-
-  // --- PUSH: entries created since last push ---
-  const toPush = entries.filter(e => stepsEntryNeedsPush(e, lastPushedAt));
-
-  for (const entry of toPush) {
-    if (stale(gen, 'steps')) return;
-    try {
-      await setDoc(doc(entriesRef, String(entry.id)), writeOncePayload(entry), { merge: true });
-    } catch (e) {
-      console.warn('[glim sync] steps entry push failed:', entry.id, e);
-    }
-  }
-
-  // --- PULL: Firestore entries not in local ---
-  let snapshot;
+  // --- PULL (bounded); a failed read still pushes (R15a) ---
+  let pull;
   try {
-    snapshot = await getDocs(entriesRef);
+    pull = await pullBounded(uid, cfg);
   } catch (e) {
     console.warn('[glim sync] steps pull failed:', e);
+    if (stale(gen, 'steps')) return;
+    recordDomain('steps', 0, await pushWriteOnce(uid, cfg, entries, gen, 'steps'));
     return;
   }
-
   if (stale(gen, 'steps')) return;
-  const localIdSet = new Set(entries.map(e => String(e.id)));
-  const toAdd = [];
-  snapshot.forEach(d => {
-    if (!localIdSet.has(d.id)) toAdd.push(d.data());
-  });
 
+  // --- MERGE: additive; every returned row is confirmed as held ---
+  const localIdSet = new Set(entries.map(e => String(e.id)));
+  const toAdd = [], confirmed = new Map();
+  for (const { id, data: remote } of pull.rows) {
+    if (!localIdSet.has(id)) toAdd.push(remote);
+    confirmed.set(id, rowMarker(cfg, remote));
+  }
+  let merged = entries, dataOk = true;
   if (toAdd.length > 0) {
-    const merged = [...entries, ...toAdd].sort((a, b) => a.timestamp - b.timestamp);
-    local = { ...local, entries: merged };
-    localSet('glim-steps', local);
-    notify(['steps']);
+    merged = [...entries, ...toAdd].sort((a, b) => a.timestamp - b.timestamp);
+    local  = { ...local, entries: merged };
+    dataOk = localSet('glim-steps', local);
+    if (dataOk) notify(['steps']);
   }
 
-  // Always advance pushedAt, even when there was nothing to push locally.
-  // A device that only pulled remote entries would otherwise keep lastPushedAt
-  // at epoch and re-push all pulled entries on the next cycle.
-  setSyncMeta({ stepsPushedAt: new Date().toISOString() });
-  recordDomain('steps', snapshot.size, toPush.length);
+  // --- SETTLE, then PUSH ---
+  const settled = await settlePull(cfg, pull, merged, confirmed, dataOk, gen, 'steps');
+  if (!settled.live) return;
+  const pushed = await pushWriteOnce(uid, cfg, merged, gen, 'steps', dataOk ? null : confirmed);
+  recordDomain('steps', pull.size, pushed, { docsBackfilled: settled.backfilled });
 }
 
 // =============================================================================
@@ -702,14 +934,12 @@ async function syncStepsConfig(uid) {
 //  Nutrition logs sync
 //  Strategy: additive merge + soft-delete propagation (same as journal).
 //  Firestore path: users/{uid}/nutrition/{entryId}
-//  Push: entries with createdAt or deletedAt newer than nutritionPushedAt
-//  Pull: entries not present locally, or remote deletedAt newer than local
+//  Pull bounded by nutritionPullCursor; push by the nutritionPushed record.
 // =============================================================================
 
 async function syncNutritionLogs(uid) {
-  const gen          = generation;
-  const meta         = getSyncMeta();
-  const lastPushedAt = meta.nutritionPushedAt ? new Date(meta.nutritionPushedAt) : new Date(0);
+  const gen = generation;
+  const cfg = WRITE_ONCE.nutrition;
 
   let local;
   try {
@@ -718,59 +948,37 @@ async function syncNutritionLogs(uid) {
   } catch {
     return;
   }
+  const logs = Array.isArray(local.logs) ? local.logs : [];
 
-  const logs      = Array.isArray(local.logs) ? local.logs : [];
-  const logsRef   = collection(db, 'users', uid, 'nutrition');
-
-  // --- PUSH: entries created or soft-deleted since last push ---
-  const toPush = logs.filter(e => nutritionLogNeedsPush(e, lastPushedAt));
-
-  for (const entry of toPush) {
-    if (stale(gen, 'nutrition')) return;
-    try {
-      await setDoc(doc(logsRef, String(entry.id)), writeOncePayload(entry), { merge: true });
-    } catch (e) {
-      console.warn('[glim sync] nutrition log push failed:', entry.id, e);
-    }
-  }
-
-  // --- PULL: Firestore entries not in localStorage, or with newer deletedAt ---
-  let snapshot;
+  // --- PULL (bounded); a failed read still pushes (R15a) ---
+  let pull;
   try {
-    snapshot = await getDocs(logsRef);
+    pull = await pullBounded(uid, cfg);
   } catch (e) {
     console.warn('[glim sync] nutrition log pull failed:', e);
+    if (stale(gen, 'nutrition')) return;
+    recordDomain('nutrition', 0, await pushWriteOnce(uid, cfg, logs, gen, 'nutrition'));
     return;
   }
-
   if (stale(gen, 'nutrition')) return;
-  const localById = new Map(logs.map(e => [String(e.id), e]));
-  const toAdd     = [];
-  let updated     = false;
 
-  snapshot.forEach(d => {
-    const remote  = d.data();
-    const localE  = localById.get(d.id);
-    if (!localE) {
-      toAdd.push(remote);
-    } else if (remote.deletedAt && (!localE.deletedAt || new Date(remote.deletedAt) > new Date(localE.deletedAt))) {
-      // Remote has a newer soft-delete - propagate it
-      localE.deletedAt = remote.deletedAt;
-      updated = true;
-    }
-  });
-
+  // --- MERGE ---
+  const { toAdd, updated, confirmed } = mergeWriteOnce(cfg, logs, pull);
+  let merged = logs, dataOk = true;
   if (toAdd.length > 0 || updated) {
-    const merged = [...logs, ...toAdd].sort(
+    merged = [...logs, ...toAdd].sort(
       (a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)
     );
-    local = { ...local, logs: merged };
-    localSet('glim-nutrition', local);
-    notify(['nutrition']);
+    local  = { ...local, logs: merged };
+    dataOk = localSet('glim-nutrition', local);
+    if (dataOk) notify(['nutrition']);
   }
 
-  setSyncMeta({ nutritionPushedAt: new Date().toISOString() });
-  recordDomain('nutrition', snapshot.size, toPush.length);
+  // --- SETTLE, then PUSH ---
+  const settled = await settlePull(cfg, pull, merged, confirmed, dataOk, gen, 'nutrition');
+  if (!settled.live) return;
+  const pushed = await pushWriteOnce(uid, cfg, merged, gen, 'nutrition', dataOk ? null : confirmed);
+  recordDomain('nutrition', pull.size, pushed, { docsBackfilled: settled.backfilled });
 }
 
 // =============================================================================
@@ -830,12 +1038,7 @@ async function syncNutritionConfig(uid) {
 // =============================================================================
 
 async function syncNutritionLibrary(uid) {
-  return syncUpdatedAtCollection(uid, {
-    storageKey:     'glim-nutrition-library',
-    arrayField:     'items',
-    collectionName: 'nutrition-library',
-    domain:         'nutrition-library',
-  });
+  return syncUpdatedAtCollection(uid, MUTABLE['nutrition-library']);
 }
 
 // =============================================================================
@@ -868,12 +1071,16 @@ async function syncNutritionLibrary(uid) {
 //  The residual window is the single round trip between getDocs and setDoc,
 //  versus the previous window, which was however long the device was offline.
 //
-//  NO WATERMARK. With the snapshot in hand, comparing every local row against
-//  its remote counterpart is free and strictly more accurate than a pushedAt
-//  stamp. It also makes the push self-healing: a setDoc that failed on a flaky
-//  connection is retried on the next sync until it lands, whereas a watermark
-//  that had already advanced past that row would have abandoned it forever.
-//  Steady state is zero pushes, because every row matches.
+//  NO WATERMARK. Since 2026-09-13 the pull is BOUNDED (only documents whose
+//  syncedAt is newer than this device's cursor come back), so the snapshot no
+//  longer holds every remote row. The push is gated on the per-row record
+//  ({domain}Pushed, R15): a row is pushed when its marker (updatedAt plus
+//  deletedAt) differs from the marker last confirmed on the server, and the
+//  record changes only on a successful push or when the merge adopts or
+//  confirms a remote copy. When the pull DID return the remote row, the
+//  snapshot comparison below is kept as a second gate (R15e). Both gates are
+//  self-healing: a setDoc that failed leaves the record unchanged and is
+//  retried on the next sync until it lands. Steady state is zero pushes.
 //
 //  If the pull fails we push NOTHING. Without the snapshot we cannot know what
 //  we would be overwriting, and an offline device's writes would fail anyway.
@@ -907,8 +1114,9 @@ async function syncNutritionLibrary(uid) {
 //  document; it is the domain for which this ordering matters most.
 // =============================================================================
 
-async function syncUpdatedAtCollection(uid, { storageKey, arrayField, collectionName, domain }) {
+async function syncUpdatedAtCollection(uid, cfg) {
   const gen = generation;
+  const { storageKey, arrayField, collectionName, domain } = cfg;
   let local;
   try {
     const raw = localStorage.getItem(storageKey);
@@ -931,10 +1139,11 @@ async function syncUpdatedAtCollection(uid, { storageKey, arrayField, collection
   }
   const docsRef = collection(db, 'users', uid, collectionName);
 
-  // --- Step 1: PULL the whole collection. No snapshot, no push. ---
-  let snapshot;
+  // --- Step 1: PULL (bounded by the cursor). No snapshot, no push: a blind
+  //     mutable push could overwrite a newer remote copy. ---
+  let pull;
   try {
-    snapshot = await getDocs(docsRef);
+    pull = await pullBounded(uid, cfg);
   } catch (e) {
     console.warn(`[glim sync] ${collectionName} pull failed; skipping push:`, e);
     return;
@@ -942,17 +1151,20 @@ async function syncUpdatedAtCollection(uid, { storageKey, arrayField, collection
 
   if (stale(gen, collectionName)) return;
   const remoteById = new Map();
-  snapshot.forEach(d => remoteById.set(d.id, d.data()));
+  for (const { id, data } of pull.rows) remoteById.set(id, data);
 
-  // --- Step 2: MERGE remote-newer rows into local (last-write-wins) ---
+  // --- Step 2: MERGE remote-newer rows into local (last-write-wins) and
+  //     note which rows the server is now known to hold in local form ---
   const localById = new Map(docs.map(d => [String(d.id), d]));
   const toAdd     = [];
+  const confirmed = new Map();
   let updated     = false;
 
   for (const [id, remote] of remoteById) {
     const localDoc = localById.get(id);
     if (!localDoc) {
       toAdd.push(remote);                       // new row from another device
+      confirmed.set(id, rowMarker(cfg, remote));
     } else if (beats(remote.updatedAt, localDoc.updatedAt)) {
       // Remote wins wholesale. Object.assign overwrites every key remote
       // carries; a key present locally but absent remotely survives. Rows
@@ -961,69 +1173,66 @@ async function syncUpdatedAtCollection(uid, { storageKey, arrayField, collection
       // schema change.
       Object.assign(localDoc, remote);
       updated = true;
+      confirmed.set(id, rowMarker(cfg, localDoc));
+    } else {
+      // A tie (own push read back, or the documented equal-stamp case), or
+      // local strictly newer. Either way the server holds the REMOTE version:
+      // record its marker. On a tie that equals the local marker and nothing
+      // is pushed; when local is newer it differs and Step 3 pushes the local
+      // row, even if an earlier push of it had been recorded (E6: the server
+      // regressed underneath a confirmed push).
+      confirmed.set(id, rowMarker(cfg, remote));
     }
   }
 
+  let dataOk = true;
   if (toAdd.length > 0 || updated) {
     const merged = [...docs, ...toAdd].sort((a, b) => ts(a.createdAt) - ts(b.createdAt));
     local = { ...local, [arrayField]: merged };
-    localSet(storageKey, local);
-    notify([domain]);
+    dataOk = localSet(storageKey, local);
+    if (dataOk) notify([domain]);
   }
 
-  // --- Step 3: PUSH only what the snapshot shows to be absent or older ---
-  // Runs over the post-merge list, so a row the pull just replaced compares
-  // equal to its remote copy and is skipped.
+  // --- Step 2b: backfill (legacy path), cursor, adoption records ---
   const finalDocs = Array.isArray(local[arrayField]) ? local[arrayField] : [];
+  const settled = await settlePull(cfg, pull, finalDocs, confirmed, dataOk, gen, collectionName);
+  if (!settled.live) return;
+
+  // --- Step 3: PUSH rows the record does not hold, gated additionally on the
+  //     snapshot when the remote row was returned. Runs over the post-merge
+  //     list, so a row the pull just replaced compares equal and is skipped. ---
   let pushed = 0;
-  for (const entry of finalDocs) {
+  for (const entry of unrecorded(cfg, finalDocs, dataOk ? null : confirmed)) {
     const remote = remoteById.get(String(entry.id));
     if (remote && !beats(entry.updatedAt, remote.updatedAt)) continue;
     if (stale(gen, collectionName)) return;   // each iteration awaits
-    pushed += 1;
     try {
-      await setDoc(doc(docsRef, String(entry.id)), entry, { merge: true });
+      await setDoc(doc(docsRef, String(entry.id)), withSyncedAt(entry), { merge: true });
     } catch (e) {
       console.warn(`[glim sync] ${collectionName} push failed:`, entry.id, e);
+      continue;                                // record untouched: retried next run
     }
+    if (stale(gen, collectionName)) return;
+    recordPushed(cfg, new Map([[String(entry.id), rowMarker(cfg, entry)]]));
+    pushed += 1;
   }
-  recordDomain(domain, snapshot.size, pushed);
+  recordDomain(domain, pull.size, pushed, { docsBackfilled: settled.backfilled });
 }
 
 async function syncSymptoms(uid) {
-  return syncUpdatedAtCollection(uid, {
-    storageKey:     'glim-symptoms',
-    arrayField:     'logs',
-    collectionName: 'symptoms',
-    domain:         'symptoms',
-  });
+  return syncUpdatedAtCollection(uid, MUTABLE['symptoms']);
 }
 
 async function syncSymptomsLibrary(uid) {
-  return syncUpdatedAtCollection(uid, {
-    storageKey:     'glim-symptoms-library',
-    arrayField:     'items',
-    collectionName: 'symptoms-library',
-    domain:         'symptoms-library',
-  });
+  return syncUpdatedAtCollection(uid, MUTABLE['symptoms-library']);
 }
 
 async function syncSymptomsCategories(uid) {
-  return syncUpdatedAtCollection(uid, {
-    storageKey:     'glim-symptoms-categories',
-    arrayField:     'items',
-    collectionName: 'symptom-categories',
-    domain:         'symptom-categories',
-  });
+  return syncUpdatedAtCollection(uid, MUTABLE['symptom-categories']);
 }
 
 async function syncSymptomClearDays(uid) {
-  return syncUpdatedAtCollection(uid, {
-    storageKey:     'glim-symptom-days',
-    arrayField:     'days',
-    collectionName: 'symptom-days',
-    domain:         'symptom-days',
-  });
+  return syncUpdatedAtCollection(uid, MUTABLE['symptom-days']);
 }
 
 // =============================================================================
@@ -1078,6 +1287,9 @@ async function syncAll(uid = currentUid) {
 //  idempotent: the row was created once and is never edited, so a re-push is
 //  byte-identical and cannot overwrite a newer version of itself.
 //
+//  A domain this device has never seeded (no {domain}Pushed record yet) is
+//  skipped, see pushEntries.
+//
 //  It does NOT push the mutable domains (nutrition-library, symptoms,
 //  symptoms-library, symptom-categories, symptom-days). They are id-keyed too,
 //  but id-keyed is not the property that makes a blind push safe - write-once
@@ -1097,28 +1309,22 @@ async function syncAll(uid = currentUid) {
 export async function flushWriteOnce(uid = currentUid) {
   const gen = generation;
   if (!uid) return;
-  const meta = getSyncMeta();
-  const at   = (v) => (v ? new Date(v) : new Date(0));
 
   try {
     const journal = localGet('glim-journal');
-    await pushEntries(uid, 'journal',
-      Array.isArray(journal) ? journal : [], at(meta.journalPushedAt), journalNeedsPush);
+    await pushEntries(uid, 'journal', Array.isArray(journal) ? journal : []);
 
     if (stale(gen, 'flush')) return;   // the previous pushEntries awaited
     const water = localGet('glim-water');
-    await pushEntries(uid, 'water',
-      Array.isArray(water?.entries) ? water.entries : [], at(meta.waterPushedAt), waterEntryNeedsPush);
+    await pushEntries(uid, 'water', Array.isArray(water?.entries) ? water.entries : []);
 
     if (stale(gen, 'flush')) return;   // the previous pushEntries awaited
     const steps = localGet('glim-steps');
-    await pushEntries(uid, 'steps',
-      Array.isArray(steps?.entries) ? steps.entries : [], at(meta.stepsPushedAt), stepsEntryNeedsPush);
+    await pushEntries(uid, 'steps', Array.isArray(steps?.entries) ? steps.entries : []);
 
     if (stale(gen, 'flush')) return;   // the previous pushEntries awaited
     const nutrition = localGet('glim-nutrition');
-    await pushEntries(uid, 'nutrition',
-      Array.isArray(nutrition?.logs) ? nutrition.logs : [], at(meta.nutritionPushedAt), nutritionLogNeedsPush);
+    await pushEntries(uid, 'nutrition', Array.isArray(nutrition?.logs) ? nutrition.logs : []);
   } catch (e) {
     console.warn('[glim flush] flushWriteOnce failed:', e);
   }
@@ -1130,7 +1336,7 @@ export async function flushWriteOnce(uid = currentUid) {
 //  Replaces the 60 s poll (2026-09-10). A run is a full push + pull over every
 //  domain (syncAll). Runs are serialised: runSync coalesces a request that
 //  arrives while a run is in flight into ONE follow-up run after it, so two
-//  runs can never interleave on the pushedAt watermarks.
+//  runs can never interleave on the per-domain cursors and records.
 //
 //  Triggers and their reasons (logged under the debug flag):
 //    startup   startSync, immediately
@@ -1289,6 +1495,63 @@ function watchSignal(uid) {
   );
 }
 
+// =============================================================================
+//  Dev-only console helpers (Section 7 and R12b of the 2026-09-13 spec)
+//
+//  Exposed as window.__glimSync when the debug flag is set or in a dev build.
+//    clearPullCursors()   drop every cursor and record: the next run performs
+//                         the legacy full pull and re-seeds both (rollback of
+//                         the bounded pull without redeploying anything)
+//    verifyBackfill()     one unfiltered read per event-log collection; stamps
+//                         any document whose syncedAt is absent or not a
+//                         Timestamp; reports per domain the remote count, the
+//                         local row count (a difference on a quiet system is
+//                         the signature of a document a bounded pull missed,
+//                         E13), what it found and stamped, and batch errors.
+//                         Idempotent; safe alongside a running sync (both
+//                         write the same idempotent merge). No cursor or
+//                         localStorage is touched.
+// =============================================================================
+
+function clearPullCursors() {
+  const meta = getSyncMeta();
+  for (const cfg of EVENT_LOG_DOMAINS) {
+    delete meta[cursorKey(cfg)]; delete meta[setAtKey(cfg)]; delete meta[recordKey(cfg)];
+  }
+  localSet('glim-sync-meta', meta);
+  console.info('[glim sync] pull cursors and push records cleared; next run performs full pulls');
+}
+
+async function verifyBackfill(uid = currentUid) {
+  if (!uid) return null;
+  const gen = generation;
+  const report = {};
+  for (const cfg of EVENT_LOG_DOMAINS) {
+    const ref = collection(db, 'users', uid, cfg.collectionName);
+    const row = { remote: 0, local: localRows(cfg).length, found: 0, stamped: 0, errors: 0 };
+    try {
+      const snap = await getDocs(ref);
+      const bad = [];
+      snap.forEach(d => { if (syncedAtMs(d.data().syncedAt) === null) bad.push(d.id); });
+      row.remote = snap.size; row.found = bad.length;
+      if (bad.length > 0) {
+        const r = await backfillSyncedAt(ref, bad, gen, `verify:${cfg.collectionName}`);
+        row.stamped = r.stamped; row.errors = r.ok ? 0 : 1;
+      }
+    } catch (e) {
+      row.errors += 1;
+      console.warn(`[glim sync] verifyBackfill ${cfg.collectionName} failed:`, e);
+    }
+    report[cfg.collectionName] = row;
+  }
+  console.table?.(report);
+  return report;
+}
+
+if (typeof window !== 'undefined' && (debugSyncEnabled() || import.meta.env?.DEV)) {
+  window.__glimSync = { clearPullCursors, verifyBackfill };
+}
+
 // Awaited full run for callers outside the scheduler (sign-out). Waits for any
 // run in flight so its own run cannot overlap it, then runs. Performs no write
 // of its own.
@@ -1340,8 +1603,13 @@ export function startSync(uid) {
   handles.push(() => document.removeEventListener('visibilitychange', onVisibility));
 
   // 6. Fallback interval: safety net for a missed signal (listener dropped,
-  //    write failed). Throttled or frozen by the browser while hidden.
-  const fallback = setInterval(() => runSync('fallback'), timings.fallbackMs);
+  //    write failed). Skipped while the tab is hidden (R18): a pinned idle tab
+  //    would otherwise run 96 times a day for nothing; the signal listener
+  //    keeps running while hidden and the focus run covers the rest.
+  const fallback = setInterval(() => {
+    if (typeof document !== 'undefined' && document.hidden) return;
+    runSync('fallback');
+  }, timings.fallbackMs);
   handles.push(() => clearInterval(fallback));
 
   // Startup run: pull cross-device data, push anything unsynced.
@@ -1367,8 +1635,10 @@ export function stopSync() {
 export const __test = {
   syncWater, syncSymptoms, syncSymptomsLibrary,
   syncSymptomsCategories, syncSymptomClearDays, syncNutritionLibrary,
-  syncNutritionLogs, syncJournal, pruneStaleSyncMeta, writeOncePayload, beats,
-  syncAll,
+  syncNutritionLogs, syncJournal, syncSteps, pruneStaleSyncMeta, writeOncePayload, beats,
+  syncAll, withSyncedAt, stripSyncedAt, rowMarker, getRecord, getCursor, getSyncMeta,
+  clearPullCursors, verifyBackfill, WRITE_ONCE, MUTABLE, RETIRED_META_KEYS,
+  OVERLAP_MS, OVERLAP_WINDOW_MS,
   generation:    () => generation,
   staleSkips:    () => staleSkips,
   lastRunPushed: () => lastRunPushed,

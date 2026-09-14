@@ -1,6 +1,18 @@
 // In-memory Firestore mock (test-only). Implements the subset of the modular
 // firebase/firestore API that sync.js uses: collection, doc, getDoc, getDocs,
-// setDoc, onSnapshot (single-document listeners only), serverTimestamp.
+// setDoc, onSnapshot (single-document listeners only), serverTimestamp, and
+// (2026-09-13, cursor-bounded pulls) query, where, Timestamp, writeBatch.
+//
+// Bounded queries: getDocs accepts a query object carrying where() constraints
+// and applies them with Firestore's documented semantics for a single-field
+// inequality: a document MISSING the field is not returned. Documents whose
+// value is NOT a stored server stamp (a string, a map, null) are also not
+// returned. ASSUMPTION, not documented by Firebase: the real range filter on a
+// timestamp value may or may not return values of other types. The spec's
+// Section 9.3 asks for an empirical check in the console before relying on
+// either behaviour; if the real service returns them, flip `matches` below and
+// re-run the suites (sync.js already skips non-Timestamp values in cursor
+// math, so only the returned-count assertions would move).
 //
 // Server timestamps (2026-09-12): serverTimestamp() returns a sentinel that
 // setDoc resolves against a mock SERVER CLOCK at commit. The clock starts at
@@ -49,7 +61,10 @@ export class MockTimestamp {
     return String(adjusted).padStart(12, '0') + '.' + String(this.nanoseconds).padStart(9, '0');
   }
   toJSON() { return { __ts: this.toMillis() }; }
+  static fromMillis(ms) { return new MockTimestamp(ms); }
 }
+// The SDK's exported class name, so sync.js can call Timestamp.fromMillis().
+export const Timestamp = MockTimestamp;
 
 // Top-level fields only, matching how sync.js writes documents.
 function resolveSentinels(obj, resolver) {
@@ -184,14 +199,71 @@ export async function getDoc(docRef) {
   return { exists: () => has, data: () => hydrate(clone(val)), id: docRef.path.split('/').pop() };
 }
 
-export async function getDocs(colRef) {
-  if (readGate) await readGate(colRef.path);
-  const prefix = colRef.path + '/';
+// query(colRef, ...constraints) and where(field, op, value): only the '>'
+// operator on one field is implemented, which is all sync.js uses.
+export function query(colRef, ...constraints) {
+  return { __type: 'query', path: colRef.path, constraints };
+}
+export function where(field, op, value) {
+  if (op !== '>') throw new Error(`mock where(): operator ${op} not implemented`);
+  return { field, op, value };
+}
+
+// Does a stored document satisfy every constraint? See the header note on
+// type semantics: only a stored server stamp can satisfy a '>' against a
+// Timestamp; missing, null, string and map values never do.
+function matches(v, constraints) {
+  for (const c of constraints) {
+    const stored = v?.[c.field];
+    if (!isStoredTs(stored)) return false;
+    if (!(stored.__ts > c.value.toMillis())) return false;
+  }
+  return true;
+}
+
+export async function getDocs(target) {
+  if (readGate) await readGate(target.path);   // gated by COLLECTION path for a query too
+  const constraints = target.__type === 'query' ? target.constraints : [];
+  const prefix = target.path + '/';
   const docs = [];
   for (const [k, v] of store.entries()) {
-    if (k.startsWith(prefix) && !k.slice(prefix.length).includes('/')) {
+    if (k.startsWith(prefix) && !k.slice(prefix.length).includes('/') && matches(v, constraints)) {
       docs.push({ id: k.slice(prefix.length), data: () => hydrate(clone(v)) });
     }
   }
   return { forEach: (cb) => docs.forEach(cb), docs, size: docs.length };
+}
+
+// writeBatch(db): queue set() calls, apply them on commit() through setDoc so
+// the write hook and write gate see each one. Sequential rather than atomic
+// (a real batch is all-or-nothing); a hook that throws on the Nth write leaves
+// the first N-1 applied, which is the pessimistic case for a caller. Rejects
+// above 500 operations, Firestore's batch limit.
+export function writeBatch(_db) {
+  const ops = [];
+  return {
+    set(docRef, data, opts = {}) { ops.push({ docRef, data, opts }); return this; },
+    async commit() {
+      if (ops.length > 500) throw new Error(`mock writeBatch: ${ops.length} operations exceeds the 500 limit`);
+      for (const { docRef, data, opts } of ops) await setDoc(docRef, data, opts);
+    },
+  };
+}
+
+// True when a write only stamped syncedAt onto an otherwise unchanged document
+// (the legacy-path backfill). Write hooks that count PUSHES use it to ignore
+// backfill writes.
+export function __isBackfill(prev, next) {
+  if (!prev || !next) return false;
+  const { syncedAt: _a, ...p } = prev;
+  const { syncedAt: _b, ...n } = next;
+  return JSON.stringify(p) === JSON.stringify(n) && !isStoredTs(prev.syncedAt) && isStoredTs(next.syncedAt);
+}
+
+// Number of documents directly under a collection path (test helper).
+export function __count(colPath) {
+  const prefix = colPath + '/';
+  let n = 0;
+  for (const k of store.keys()) if (k.startsWith(prefix) && !k.slice(prefix.length).includes('/')) n++;
+  return n;
 }

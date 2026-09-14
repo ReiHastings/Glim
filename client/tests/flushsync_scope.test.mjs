@@ -97,18 +97,23 @@ check('syncUpdatedAtCollection exists', mStart !== -1);
 const mEnd  = src.indexOf('\n}\n', mStart);
 const mBody = src.slice(mStart, mEnd);
 
-const firstRead  = mBody.indexOf('getDocs(');
+// The pull goes through pullBounded (the cursor-bounded getDocs, 2026-09-13).
+const firstRead  = mBody.indexOf('pullBounded(');
 const firstWrite = mBody.indexOf('setDoc(');
-check('syncUpdatedAtCollection reads the collection (getDocs)', firstRead !== -1);
+check('syncUpdatedAtCollection reads the collection (pullBounded -> getDocs)', firstRead !== -1);
 check('syncUpdatedAtCollection writes (setDoc)', firstWrite !== -1);
 check('syncUpdatedAtCollection PULLS BEFORE IT PUSHES',
   firstRead !== -1 && firstWrite !== -1 && firstRead < firstWrite);
 
-// The push must be gated on the remote snapshot, not on a local watermark: a
-// watermark cannot know what the server holds, and it abandons a row whose push
-// failed once. No metaKey, no PushedAt.
+// The push must be gated on what the server is known to hold (the remote
+// snapshot when the row was returned, the per-row record otherwise), never on
+// a run-time watermark: a watermark cannot know what the server holds, and it
+// abandons a row whose push failed once. No metaKey, no PushedAt, no inline
+// meta read (the record is reached through its helpers).
 check('syncUpdatedAtCollection uses no push watermark',
   !/PushedAt|metaKey|getSyncMeta\(/.test(mBody));
+check('syncUpdatedAtCollection pushes only rows the record does not hold (unrecorded)',
+  /unrecorded\(cfg, finalDocs/.test(mBody));
 check('syncUpdatedAtCollection compares local updatedAt against the remote copy before pushing',
   /remoteById\.get\(String\(entry\.id\)\)/.test(mBody) &&
   /beats\(entry\.updatedAt, remote\.updatedAt\)/.test(mBody));
@@ -154,13 +159,25 @@ check('syncAll uses Promise.allSettled, not Promise.all',
 // re-push of a row created with `deletedAt: null` would clear a soft-delete
 // another device has recorded. Every write-once setDoc site must go through
 // writeOncePayload, which omits the field when null.
-// \w+ rather than [a-zA-Z]+Ref: pushEntries names its collection ref `ref`.
-const writeOnceSites = (src.match(/setDoc\(doc\(\w+, String\(entry\.id\)\), writeOncePayload\(entry\), \{ merge: true \}\)/g) || []).length;
-const rawSites       = (src.match(/setDoc\(doc\(\w+, String\(entry\.id\)\), entry, \{ merge: true \}\)/g) || []).length;
-check('all five write-once setDoc sites (pushEntries + 4 sync fns) use writeOncePayload',
-  writeOnceSites === 5);
-check('the only raw setDoc(entry) site left is the mutable-domain push (which needs the full row)',
-  rawSites === 1 && mBody.includes('setDoc(doc(docsRef, String(entry.id)), entry, { merge: true })'));
+// Since 2026-09-13 one loop (pushWriteOnce) serves the four sync functions and
+// the flush, and every event-log write passes through withSyncedAt (spec R1,
+// invariant I6): syncedAt is what the bounded pull filters on, so a write
+// without it is invisible to every other device.
+const writeOnceSites = (src.match(/setDoc\(doc\(\w+, String\(entry\.id\)\), withSyncedAt\(writeOncePayload\(entry\)\), \{ merge: true \}\)/g) || []).length;
+const rawSites       = (src.match(/setDoc\(doc\(\w+, String\(entry\.id\)\), withSyncedAt\(entry\), \{ merge: true \}\)/g) || []).length;
+const anyEntrySites  = (src.match(/setDoc\(doc\(\w+, String\(entry\.id\)\),/g) || []).length;
+check('the single write-once setDoc site (pushWriteOnce) uses withSyncedAt(writeOncePayload(entry))',
+  writeOnceSites === 1);
+check('the only raw setDoc(entry) site left is the mutable-domain push, wrapped in withSyncedAt',
+  rawSites === 1 && mBody.includes('setDoc(doc(docsRef, String(entry.id)), withSyncedAt(entry), { merge: true })'));
+check('every event-log setDoc site goes through withSyncedAt (I6)', anyEntrySites === writeOnceSites + rawSites);
+check('all four write-once sync functions and pushEntries push through pushWriteOnce',
+  ['syncJournal', 'syncWater', 'syncSteps', 'syncNutritionLogs', 'pushEntries'].every(fn => {
+    const at = src.indexOf(`async function ${fn}(`);
+    return at !== -1 && src.slice(at, src.indexOf('\n}\n', at)).includes('pushWriteOnce(');
+  }));
+check('the backfill batch write carries syncedAt: serverTimestamp()',
+  /batch\.set\(doc\(ref, id\), \{ syncedAt: serverTimestamp\(\) \}, \{ merge: true \}\)/.test(src));
 
 // Merge and push must both use beats(), the NaN-aware comparison, not a bare >.
 check('mutable merge adopts remote via beats()',

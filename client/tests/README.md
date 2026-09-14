@@ -53,6 +53,13 @@ node --import ./tests/register-hooks.mjs tests/sync_generation_guard.test.mjs
 # double startSync leaves one listener, flushSync waits for a run in flight
 node --import ./tests/register-sync-mocks.mjs tests/sync_scheduler.test.mjs
 
+# Cursor-bounded pulls and the per-row push record (2026-09-13): legacy pull and
+# backfill, cursor advance and the two-minute query-side overlap, persist order,
+# seeding, no echo (with clock skew), the E6 race and its failed re-push retry,
+# record merge under a concurrent flush, account switch during a push loop, the
+# dev helpers, the hidden-tab fallback skip, and the whole-account steady state
+node --import ./tests/register-sync-mocks.mjs tests/cursor_pulls.test.mjs
+
 # Static: every persisting store announces its write on syncBus with a DOMAINS
 # member; syncBus imports nothing from Firebase; no store imports sync/firebase
 node tests/syncbus_wiring.test.mjs

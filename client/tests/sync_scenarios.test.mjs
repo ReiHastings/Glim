@@ -53,8 +53,9 @@ function setWater(entries, cfg = {}) {
     configUpdatedAt: cfg.configUpdatedAt ?? EPOCH,
   }));
 }
-// deletedAt strictly after a device's last push watermark, so the push filter picks it up
-const afterPush = () => iso(Date.parse(JSON.parse(mem.get('glim-sync-meta')).waterPushedAt) + 1000);
+// Any deletedAt changes the row's marker (spec R15), so the push picks it up;
+// there is no watermark to clear since 2026-09-13.
+const afterPush = () => iso(Date.now());
 
 // ===== S2: an undone bottle does not reappear after a sync =====
 FS.__reset(); mem = new Map();
