@@ -4,6 +4,7 @@ App/output
 App/App/public
 DerivedData
 xcuserdata
+App/App.xcodeproj/project.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
 
 # Cordova plugins for Capacitor
 capacitor-cordova-ios-plugins
