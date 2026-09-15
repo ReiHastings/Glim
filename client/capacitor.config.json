@@ -1,5 +1,11 @@
 {
   "appId": "com.reihastings.glim",
   "appName": "Glim",
-  "webDir": "dist"
+  "webDir": "dist",
+  "plugins": {
+    "FirebaseAuthentication": {
+      "skipNativeAuth": false,
+      "providers": ["google.com"]
+    }
+  }
 }

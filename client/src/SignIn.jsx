@@ -3,20 +3,27 @@
 // Project:     Glim
 // Author:      Reina Hastings (reinahastings13@gmail.com)
 // Created:     2026-03-26
-// Last Modified: 2026-04-13
-// Purpose:     Sign-in screen shown to unauthenticated users. Handles Google
-//              sign-in via Firebase Auth using signInWithPopup on all platforms.
-//              When the popup is blocked (installed PWA standalone webview),
-//              shows a fallback prompt to open Glim in Safari. Safari and the
-//              PWA share origin storage, so signing in via Safari authenticates
-//              the PWA on next launch via onAuthStateChanged.
-// Inputs:      Firebase auth and googleProvider from firebase.js
+// Last Modified: 2026-09-15
+// Purpose:     Sign-in screen shown to unauthenticated users. Google sign-in
+//              takes one of two paths. On web it uses signInWithPopup, and when
+//              the popup is blocked (installed PWA standalone webview) it shows
+//              a fallback prompt to open Glim in Safari, which shares origin
+//              storage with the PWA. On native (Capacitor iOS) the popup flow
+//              cannot work at all, so it takes a Google credential from the
+//              native plugin and then signs the JS SDK in with
+//              signInWithCredential. Both layers are required: Firestore access
+//              runs through the JS SDK, so without the second step request.auth
+//              is null and firestore.rules rejects everything.
+// Inputs:      auth and googleProvider from firebase.js, FirebaseAuthentication
+//              from @capacitor-firebase/authentication
 // Outputs:     Triggers onAuthStateChanged in App.jsx on successful sign-in
 // Usage:       Rendered by App.jsx when auth state is null (not signed in)
 // -----------------------------------------------------------------------------
 
 import { useState } from 'react';
-import { signInWithPopup } from 'firebase/auth';
+import { GoogleAuthProvider, signInWithCredential, signInWithPopup } from 'firebase/auth';
+import { Capacitor } from '@capacitor/core';
+import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
 import { auth, googleProvider } from './firebase';
 
 // --- Google "G" logo SVG (inline, official brand colors) ---
@@ -32,6 +39,25 @@ function GoogleIcon() {
   );
 }
 
+// --- Native (Capacitor) Google sign-in ---
+//
+// Step 1 has to happen natively: signInWithPopup needs the popup/redirect
+// resolver, which never initializes from the capacitor://localhost origin. That
+// is the same hang documented in firebase.js.
+//
+// Step 2 is not optional. Glim's Firestore calls all go through the JS SDK and
+// carry its auth state, not the native layer's. Without signInWithCredential,
+// request.auth is null and every firestore.rules rule rejects.
+async function signInWithGoogleNative() {
+  const result = await FirebaseAuthentication.signInWithGoogle();
+  const idToken = result.credential?.idToken;
+  if (!idToken) {
+    throw new Error('native sign-in returned no id token');
+  }
+  const credential = GoogleAuthProvider.credential(idToken);
+  await signInWithCredential(auth, credential);
+}
+
 // --- Sign-in screen ---
 
 export default function SignIn() {
@@ -43,10 +69,22 @@ export default function SignIn() {
     setError(null);
     setLoading(true);
     try {
-      await signInWithPopup(auth, googleProvider);
+      if (Capacitor.isNativePlatform()) {
+        await signInWithGoogleNative();
+      } else {
+        await signInWithPopup(auth, googleProvider);
+      }
       // onAuthStateChanged in App.jsx handles the transition
     } catch (err) {
-      if (err.code === 'auth/popup-blocked' || err.code === 'auth/popup-closed-by-browser') {
+      if (Capacitor.isNativePlatform()) {
+        // The plugin has no documented error constant for a user-cancelled
+        // Google sheet, and none was found in its iOS source. So log the raw
+        // error and show a generic message for now. Once a real cancellation
+        // has been seen in the Xcode console, suppress that specific case here
+        // instead of reporting it as a failure.
+        console.warn('[glim] native sign-in failed:', err?.code, err?.message, err);
+        setError('sign-in failed - try again');
+      } else if (err.code === 'auth/popup-blocked' || err.code === 'auth/popup-closed-by-browser') {
         const isStandalone =
           window.navigator.standalone === true ||
           window.matchMedia('(display-mode: standalone)').matches;

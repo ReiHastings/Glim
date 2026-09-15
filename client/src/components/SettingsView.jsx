@@ -3,7 +3,7 @@
 // Project:     Glim
 // Author:      Reina Hastings (reinahastings13@gmail.com)
 // Created:     2026-04-13
-// Last Modified: 2026-04-13
+// Last Modified: 2026-09-15
 // Purpose:     Full-screen focus-mode settings view. Replaces the old gear-icon
 //              floating panel. Accessed via the "more" menu. Manages collapsible
 //              accordion sections with single-expand behavior (opening one
@@ -18,6 +18,8 @@
 import { useState, useEffect } from 'react';
 import { signOut } from 'firebase/auth';
 import { deleteDoc, getDocs, collection, doc } from 'firebase/firestore';
+import { Capacitor } from '@capacitor/core';
+import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
 import { auth, db } from '../firebase';
 import { flushSync } from '../sync';
 import { useUIStore } from '../stores/useUIStore';
@@ -184,6 +186,18 @@ export default function SettingsView() {
   // be counterproductive.
   const handleSignOut = async () => {
     try { await flushSync('sign-out'); } catch { /* ignore */ }
+    // Native sign-in leaves two independent sessions: the native Firebase SDK
+    // plus the Google provider, and the JS SDK. Both must be cleared. A
+    // surviving native session makes the next sign-in reuse the old account
+    // silently, which also defeats the prompt: 'select_account' parameter set
+    // on googleProvider in firebase.js.
+    //
+    // Native first, deliberately. signOut(auth) fires onAuthStateChanged, which
+    // makes App.jsx render SignIn and unmount this component, so anything
+    // awaited after it may never run.
+    if (Capacitor.isNativePlatform()) {
+      try { await FirebaseAuthentication.signOut(); } catch { /* best effort */ }
+    }
     await signOut(auth);
   };
 
