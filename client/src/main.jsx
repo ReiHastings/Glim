@@ -10,6 +10,9 @@ createRoot(document.getElementById('root')).render(
   </StrictMode>,
 )
 
+// No-op under `npm run build:ios` (--mode native): vite-plugin-pwa's `disable`
+// option resolves virtual:pwa-register to an empty stub, so nothing registers
+// inside the iOS app. See vite.config.js.
 registerSW({
   onRegisteredSW(swUrl, r) {
     if (!r) return

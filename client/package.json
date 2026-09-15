@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:ios": "vite build --mode native",
+    "sync:ios": "npm run build:ios && npx cap sync ios"
   },
   "dependencies": {
     "@capacitor/core": "^8.5.2",
