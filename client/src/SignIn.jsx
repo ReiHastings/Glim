@@ -170,7 +170,7 @@ export default function SignIn() {
               the pwa can't open sign-in directly - tap below to sign in through safari, then come back here
             </div>
             <button
-              onClick={() => window.open('https://reitheheroine.github.io/Glim/', '_blank')}
+              onClick={() => window.open('https://reihastings.github.io/Glim/', '_blank')}
               style={{
                 padding: '9px 18px',
                 background: 'rgba(255,255,255,0.1)',
