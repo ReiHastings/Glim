@@ -2,6 +2,9 @@
   "appId": "com.reihastings.glim",
   "appName": "Glim",
   "webDir": "dist",
+  "ios": {
+    "backgroundColor": "#0d0820"
+  },
   "plugins": {
     "FirebaseAuthentication": {
       "skipNativeAuth": false,
