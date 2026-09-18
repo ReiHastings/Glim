@@ -39,6 +39,11 @@ node --import ./tests/register-sync-mocks.mjs tests/symptoms_sync.test.mjs
 # manual device/console checks in the Phase 2 handoff spec)
 node tests/firestore_rules.test.mjs
 
+# Health step import, the adapter seam: the null adapter's contract, and the
+# invariant that only pluginAdapter.js imports @capgo/capacitor-health and only
+# through a dynamic import (so web bundles and this harness never load it)
+node --import ./tests/register-hooks.mjs tests/health_adapter.test.mjs
+
 # Health step import, precedence: manual beats imported, a typed zero is a real
 # statement, the clear marker hands a day back to health, and imported days
 # count toward streaks and the weekly average for a user who never types

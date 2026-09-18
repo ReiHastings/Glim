@@ -13,8 +13,10 @@
   },
   "dependencies": {
     "@capacitor-firebase/authentication": "^8.5.1",
+    "@capacitor/app": "^8.1.1",
     "@capacitor/core": "^8.5.2",
     "@capacitor/ios": "^8.5.2",
+    "@capgo/capacitor-health": "^8.7.0",
     "firebase": "^12.11.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
