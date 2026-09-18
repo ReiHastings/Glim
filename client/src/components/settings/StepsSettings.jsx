@@ -22,6 +22,7 @@
 // -----------------------------------------------------------------------------
 
 import { useState, useEffect } from 'react';
+import { Capacitor } from '@capacitor/core';
 import { useStepsStore, computeTiers } from '../../stores/useStepsStore';
 import { getHealthAdapter } from '../../health/adapter';
 import { readDeviceRecord, writeDeviceRecord } from '../../health/deviceRecord';
@@ -78,8 +79,17 @@ function HealthImportToggle() {
       try {
         const adapter = await getHealthAdapter();
         const ok = await adapter.isAvailable();
+        // Unconditional, and deliberately so: when this row does not appear
+        // there is nothing else to go on, and on a device the only console
+        // available may be Xcode's. One line per settings open is cheap.
+        console.info('[glim health] toggle availability:', JSON.stringify({
+          platform: Capacitor.getPlatform(),
+          source: adapter.source,
+          available: ok,
+        }));
         if (alive) setAvailable(ok);
-      } catch {
+      } catch (e) {
+        console.warn('[glim health] availability check threw:', e);
         if (alive) setAvailable(false);
       }
     })();
