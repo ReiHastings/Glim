@@ -19,6 +19,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useStepsStore, TIERS, countForDate, manualCountForDate, dateStr } from '../stores/useStepsStore';
 import { useStepsHealthStore } from '../stores/useStepsHealthStore';
+import { importSteps } from '../health/stepsImport';
 import { todayStr } from '../utils/dateUtils';
 import { useMessageStore } from '../stores/useMessageStore';
 
@@ -380,6 +381,22 @@ export default function StepsPanel() {
 
   useEffect(() => {
     return () => clearTimeout(bubbleTimer.current);
+  }, []);
+
+  // --- Health step import, panel-open trigger ---
+  //
+  // CompanionPanel renders this component conditionally and returns null when no
+  // panel is open, so StepsPanel genuinely unmounts on close: a mount effect is
+  // a correct once-per-open hook. Opening the steps panel is the moment the user
+  // is most likely to be looking at the number, so it is worth a fresh read.
+  //
+  // No cleanup to do: importSteps owns its own in-flight guard, and its result
+  // reaches the panel through the store rather than through component state, so
+  // a resolve after unmount sets nothing on a dead component. Under React
+  // StrictMode the effect fires twice in dev; the in-flight guard absorbs it.
+  useEffect(() => {
+    importSteps({ reason: 'panel' }).catch(e =>
+      console.warn('[glim health] panel import failed:', e));
   }, []);
 
   const openEditor = () => {

@@ -93,5 +93,27 @@ check('no store reads another store via getState() either',
 check('StepsPanel prefills the editor only for a manual value',
   /todaySource === 'manual'/.test(panelSrc));
 
+// --- The device health record must never reach the sync bus ---
+//
+// 'glim-health' records a permission that belongs to ONE PHONE. Syncing it
+// would tell the desktop tab that it may import from Health, which it cannot,
+// and would claim a consent that device never gave. It lives outside
+// src/stores/ so the store scan above does not cover it; assert it directly.
+const deviceRecordSrc = src('health/deviceRecord.js');
+check('deviceRecord.js does not import the sync bus',
+  !/from '\.\.\/syncBus'/.test(deviceRecordSrc));
+check('deviceRecord.js never announces a local write',
+  !/notifyLocalWrite/.test(deviceRecordSrc));
+check('no sync config names the device health key',
+  !/'glim-health'/.test(syncSrc));
+
+// --- The import triggers ---
+const appSrc = src('App.jsx');
+check('the startup import is native-only',
+  /Capacitor\.isNativePlatform\(\)/.test(appSrc) && /reason: 'startup'/.test(appSrc));
+check('the foreground listener is removed on unmount',
+  /appStateChange/.test(appSrc) && /handle\.remove\(\)/.test(appSrc));
+check('the panel-open trigger exists', /reason: 'panel'/.test(panelSrc));
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

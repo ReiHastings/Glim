@@ -44,6 +44,12 @@ node tests/firestore_rules.test.mjs
 # through a dynamic import (so web bundles and this harness never load it)
 node --import ./tests/register-hooks.mjs tests/health_adapter.test.mjs
 
+# Health step import, the service: the four guards (toggle, availability,
+# interval floor, one-at-a-time), the change guard and idempotence, empty-window
+# detection, and the account-switch abandonment asserted MID-LOOP (a guard that
+# only checks at the end of a run discards nothing)
+node --import ./tests/register-hooks.mjs tests/steps_import.test.mjs
+
 # Health step import, precedence: manual beats imported, a typed zero is a real
 # statement, the clear marker hands a day back to health, and imported days
 # count toward streaks and the weekly average for a user who never types

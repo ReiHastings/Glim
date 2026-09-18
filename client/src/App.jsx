@@ -21,8 +21,10 @@
 import { useEffect, useState } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { Capacitor } from '@capacitor/core';
 import { auth, db } from './firebase';
 import { startSync, stopSync } from './sync';
+import { importSteps } from './health/stepsImport';
 import { reloadAllStores } from './stores';
 import DesktopPet from './DesktopPet.jsx';
 import SignIn from './SignIn.jsx';
@@ -77,6 +79,40 @@ export default function App() {
     })();
   }, []);
 
+  // --- Health step import, foreground trigger ---
+  //
+  // Capacitor's appStateChange fires when the app is brought back to the front,
+  // which is the moment a user's step count is most likely to have moved: they
+  // have been walking with the phone in a pocket. The import's own interval
+  // floor collapses this with the startup and panel triggers.
+  //
+  // The listener is removed on unmount. Without that, a dev-server hot reload
+  // stacks a new listener on every edit and each foreground fires N imports -
+  // invisible in testing, because the interval floor swallows them.
+  //
+  // Native only: on the web the null adapter would no-op anyway, but there is no
+  // reason to import the plugin or run the guard chain in a browser tab.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    let remove = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { App: CapacitorApp } = await import('@capacitor/app');
+        const handle = await CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+          if (!isActive) return;
+          importSteps({ reason: 'resume' }).catch(e =>
+            console.warn('[glim health] resume import failed:', e));
+        });
+        if (cancelled) handle.remove();
+        else remove = () => handle.remove();
+      } catch (e) {
+        console.warn('[glim health] could not listen for foreground events:', e);
+      }
+    })();
+    return () => { cancelled = true; if (remove) remove(); };
+  }, []);
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       if (currentUser) {
@@ -114,6 +150,15 @@ export default function App() {
         startSync(currentUser.uid);
         ensureUserDocument(currentUser).catch(e =>
           console.warn('[glim] ensureUserDocument failed:', e));
+
+        // Health step import, startup trigger. Fire-and-forget for the same
+        // reason as ensureUserDocument: nothing on screen waits for it, and the
+        // panel shows whatever is already stored. It no-ops unless this device
+        // has the import switched on.
+        if (Capacitor.isNativePlatform()) {
+          importSteps({ reason: 'startup' }).catch(e =>
+            console.warn('[glim health] startup import failed:', e));
+        }
       } else {
         stopSync();
         setUser(null);
