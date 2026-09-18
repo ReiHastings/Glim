@@ -62,23 +62,86 @@ function saveSteps(state) {
 
 // --- Computed helpers ---
 
-// Replace-style: latest entry per date wins for the step count
-export function countForDate(entries, dateString) {
-  const dayEntries = entries.filter(e => dateStr(e.timestamp) === dateString);
-  if (dayEntries.length === 0) return 0;
-  return dayEntries.reduce((latest, e) => (e.timestamp > latest.timestamp ? e : latest)).count;
+// The MANUAL value for a date, or null when the user has said nothing about it.
+//
+// Replace-style: the latest entry per date wins. Returns null in two cases that
+// must stay distinguishable from a real zero:
+//   - no entries for the date at all
+//   - the latest entry is a CLEAR MARKER (count === null), written by
+//     clearManualForToday to hand the day back to the health import
+// A manual entry OF zero is a real statement and returns 0, not null.
+export function manualCountForDate(entries, dateString) {
+  const dayEntries = (entries ?? []).filter(e => dateStr(e.timestamp) === dateString);
+  if (dayEntries.length === 0) return null;
+  // `>=`, so that two entries sharing a millisecond resolve to the LATER
+  // APPENDED one. Human taps never collide, but clearManualForToday can be
+  // called in the same millisecond as the entry it supersedes, and the clear
+  // must win: the array order is the order the statements were made.
+  const latest = dayEntries.reduce((a, e) => (e.timestamp >= a.timestamp ? e : a));
+  return latest.count ?? null;
 }
 
-// Streak: consecutive days reaching tier 1 (2,500 steps), counting back from today
-function computeStreak(entries) {
-  if (entries.length === 0) return 0;
-  const base = new Date();
-  let streak = 0;
-  for (let i = 0; i < 365; i++) {
-    const d = new Date(base);
+// Milliseconds of an ISO stamp, mirroring sync.js's ts(): a missing or
+// malformed stamp must not win a comparison by accident.
+function stampMs(v) {
+  const t = v ? new Date(v).getTime() : 0;
+  return Number.isNaN(t) ? 0 : t;
+}
+
+// The count Glim shows for a date, and where it came from.
+//
+// PRECEDENCE (handoff spec D2): a manual entry always beats an imported row for
+// the same date. A manual entry is a deliberate act; an import is automatic and
+// reruns on every foreground, so "latest write wins" would let the automatic
+// path overwrite a deliberate correction within minutes.
+//
+// healthRows are passed IN rather than read from useStepsHealthStore: stores in
+// this project never import each other (the panel composes them), and keeping
+// this function pure is what makes the precedence rules testable in bare Node.
+export function resolveDayCount(entries, healthRows, dateString) {
+  const manual = manualCountForDate(entries, dateString);
+  if (manual !== null) return { count: manual, source: 'manual' };
+
+  const rows = (healthRows ?? []).filter(r => r?.date === dateString);
+  if (rows.length === 0) return { count: 0, source: null };
+
+  // Two rows for one date means two platforms imported for the same account
+  // (iOS and Android). Latest write wins; both measure the same person.
+  const best = rows.reduce((a, b) => (stampMs(b.updatedAt) > stampMs(a.updatedAt) ? b : a));
+  return { count: best.steps, source: best.source };
+}
+
+// Replace-style count for a date, health-inclusive.
+// The third argument is optional so that two-argument callers written before the
+// health import keep their manual-only behavior.
+export function countForDate(entries, dateString, healthRows = []) {
+  return resolveDayCount(entries, healthRows, dateString).count;
+}
+
+// Walks back `n` logical days from today, oldest last, yielding date strings.
+//
+// ANCHORED AT NOON for the same reason health/fold.js is (spec R7a): carrying
+// the current time of day into setDate() arithmetic can land on a local time
+// that DST skips, which JS normalizes forward an hour and which then shifts the
+// logical date by a whole day. Noon exists on every day in every zone.
+function logicalDaysBack(n) {
+  const anchor = new Date();
+  anchor.setHours(12, 0, 0, 0);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const d = new Date(anchor);
     d.setDate(d.getDate() - i);
-    const dStr = toLogicalDateStr(d);
-    if (countForDate(entries, dStr) >= TIERS[0]) {
+    out.push(toLogicalDateStr(d));
+  }
+  return out;
+}
+
+// Streak: consecutive days reaching tier 1 (2,500 steps), counting back from today.
+// Health-imported days count: a user who never types a number still has a streak.
+function computeStreak(entries, healthRows = []) {
+  let streak = 0;
+  for (const dStr of logicalDaysBack(365)) {
+    if (countForDate(entries, dStr, healthRows) >= TIERS[0]) {
       streak++;
     } else {
       break;
@@ -88,13 +151,10 @@ function computeStreak(entries) {
 }
 
 // 7-day rolling average of daily step counts (using replace-style counts per day)
-function computeWeeklyAvg(entries) {
-  const base = new Date();
+function computeWeeklyAvg(entries, healthRows = []) {
   let total = 0;
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(base);
-    d.setDate(d.getDate() - i);
-    total += countForDate(entries, toLogicalDateStr(d));
+  for (const dStr of logicalDaysBack(7)) {
+    total += countForDate(entries, dStr, healthRows);
   }
   return Math.round((total / 7) * 10) / 10;
 }
@@ -129,6 +189,23 @@ export const useStepsStore = create((set, get) => ({
     });
   },
 
+  // Hands today back to the health import after a manual entry.
+  //
+  // Appends an ordinary entry whose count is null - a CLEAR MARKER, not a
+  // deletion. Manual entries are append-only and sync on the write-once path,
+  // where nothing is ever edited or removed, so "undo" has to be expressed as a
+  // later statement rather than as a removal. manualCountForDate reads the
+  // latest entry for the day, sees null, and lets resolveDayCount fall through
+  // to the imported row. Typing a number afterwards supersedes the marker.
+  clearManualForToday: () => {
+    const entry = { id: Date.now(), timestamp: Date.now(), count: null };
+    set(state => {
+      const next = { ...state, entries: [...state.entries, entry] };
+      saveSteps(next);
+      return next;
+    });
+  },
+
   // Called by sync service after a pull that updates localStorage
   reload: () => {
     const data = loadSteps();
@@ -139,8 +216,15 @@ export const useStepsStore = create((set, get) => ({
     });
   },
 
-  // Computed selectors - read current state via get()
-  getTodayCount: () => countForDate(get().entries, todayStr()),
-  getStreak:     () => computeStreak(get().entries),
-  getWeeklyAvg:  () => computeWeeklyAvg(get().entries),
+  // Computed selectors - read current state via get().
+  //
+  // healthRows come from the CALLER (the panel, which subscribes to
+  // useStepsHealthStore) rather than from a cross-store getState() call: stores
+  // here never import each other, and a getState() read would not subscribe the
+  // component to health-store changes, so the panel would show a stale number
+  // after an import until something else re-rendered it.
+  getTodayCount:  (healthRows = []) => countForDate(get().entries, todayStr(), healthRows),
+  getTodaySource: (healthRows = []) => resolveDayCount(get().entries, healthRows, todayStr()).source,
+  getStreak:      (healthRows = []) => computeStreak(get().entries, healthRows),
+  getWeeklyAvg:   (healthRows = []) => computeWeeklyAvg(get().entries, healthRows),
 }));

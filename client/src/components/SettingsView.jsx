@@ -43,7 +43,16 @@ import NutritionSettings, { nutritionSummary, nutritionIcon } from './settings/N
 // deleteFirestoreData clears only journal and water plus three singletons. So
 // "reset all data" leaves symptom health records in localStorage AND in
 // Firestore, and the domains it clears locally but not remotely (steps,
-// nutrition, nutrition library) are re-pulled on the next sync. Not fixed here
+// nutrition, nutrition library) are re-pulled on the next sync.
+//
+// Amended 2026-09-17 (health step import): 'glim-steps-health' and its
+// Firestore collection 'steps-health' are in the same position as the symptom
+// keys - imported daily step totals survive a reset in both places. What IS
+// cleared is 'glim-health', the device's health-import consent record, so a
+// reset at least turns the import off and re-asks for consent; without that,
+// the toggle would still be on and the next foreground would re-import the
+// last eight days within a minute, which would look like the reset had
+// silently failed. Not fixed here
 // because the correct scope of reset - and whether it must refuse to run
 // offline, since a local-only clear is undone by the next pull - is a product
 // decision, not a code one. The UID-change guard in App.jsx uses a prefix scan
@@ -51,7 +60,7 @@ import NutritionSettings, { nutritionSummary, nutritionIcon } from './settings/N
 const LOCAL_KEYS = [
   'glim-water', 'glim-steps', 'glim-journal', 'glim-pokes',
   'glim-settings', 'glim-sync-meta', 'glim-uid', 'glim-nutrition',
-  'glim-nutrition-library',
+  'glim-nutrition-library', 'glim-health',
 ];
 
 // Firestore collections/singletons to delete (best-effort)

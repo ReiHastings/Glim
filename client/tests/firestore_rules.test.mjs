@@ -45,7 +45,7 @@ check('every data document is matched by the single-level rule',
   /match \/users\/\{userId\}\/\{collectionId\}\/\{docId\} \{/.test(rules));
 
 // --- The gate ---
-const MUTABLE = ['nutrition-library', 'symptoms', 'symptoms-library', 'symptom-categories', 'symptom-days'];
+const MUTABLE = ['nutrition-library', 'symptoms', 'symptoms-library', 'symptom-categories', 'symptom-days', 'steps-health'];
 const isMutableBody = rules.slice(rules.indexOf('function isMutable'), rules.indexOf('}', rules.indexOf('function isMutable')));
 for (const c of MUTABLE) check(`isMutable lists '${c}'`, isMutableBody.includes(`'${c}'`));
 check('isMutable lists nothing else',
@@ -54,6 +54,23 @@ check('isMutable lists nothing else',
 const dataBlock = rules.slice(rules.indexOf('match /users/{userId}/{collectionId}/{docId}'));
 check('create and update are gated on the mutable check',
   /allow create, update: if isOwner\(userId\)\s*&& \(!isMutable\(collectionId\) \|\| updatedAtNotRegressing\(\)\)/.test(dataBlock));
+// --- steps-health field validation (2026-09-17) ---
+// Static only: this suite reads the rules TEXT; nothing here can evaluate a
+// rules expression (there is no emulator, see README). The behavioral gate is
+// the manual device write plus a deliberately malformed console write, both
+// recorded in the Phase 2 handoff spec Section 9.2.
+check('steps-health writes are gated on the field validator',
+  /&& \(collectionId != 'steps-health' \|\| stepsHealthValid\(\)\)/.test(dataBlock));
+const validator = rules.slice(rules.indexOf('function stepsHealthValid'), rules.indexOf('\n    }', rules.indexOf('function stepsHealthValid')));
+check('the validator exists', validator.length > 0);
+for (const [name, re] of [
+  ['source is restricted to the two known platforms', /source in \['healthkit', 'health_connect'\]/],
+  ['steps must be a non-negative integer',            /steps is int && .*steps >= 0/],
+  ['date must be YYYY-MM-DD',                         /date\.matches\('\^\[0-9\]\{4\}-\[0-9\]\{2\}-\[0-9\]\{2\}\$'\)/],
+  ['updatedAt must be an ISO stamp',                  /isIsoStamp\(d\.updatedAt\)/],
+  ['no unexpected fields are accepted',               /keys\(\)\.hasOnly\(/],
+]) check(`validator: ${name}`, re.test(validator));
+
 check('delete is ownership-only (request.resource is null on delete)',
   /allow delete: if isOwner\(userId\);/.test(dataBlock));
 check('no bare "allow write" remains on the data path',

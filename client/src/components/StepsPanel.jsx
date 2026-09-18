@@ -17,7 +17,8 @@
 // -----------------------------------------------------------------------------
 
 import { useState, useRef, useEffect } from 'react';
-import { useStepsStore, TIERS, countForDate, dateStr } from '../stores/useStepsStore';
+import { useStepsStore, TIERS, countForDate, manualCountForDate, dateStr } from '../stores/useStepsStore';
+import { useStepsHealthStore } from '../stores/useStepsHealthStore';
 import { todayStr } from '../utils/dateUtils';
 import { useMessageStore } from '../stores/useMessageStore';
 
@@ -220,17 +221,29 @@ function fill(template, vars) {
   });
 }
 
-function selectMessage(count, prev, entries, today, tiers, newStreak) {
+// `prev` is the RESOLVED count the user was just looking at (health-inclusive),
+// not the manual-only value. That is what the milestone and tier branches below
+// have always meant by "previous": was the DAY below this threshold before this
+// edit. Passing the manual-only value here would re-announce a milestone the day
+// crossed hours ago by import, and would be null on an import-only day, which
+// coerces to 0 in every comparison.
+function selectMessage(count, prev, entries, healthRows, today, tiers, newStreak) {
   const gained = count - prev;
   const vars   = { count: count.toLocaleString(), prev: prev.toLocaleString(), gained: gained.toLocaleString(), streak: newStreak };
 
   // --- Priority 1: first-ever milestone day ---
   for (const m of STEP_MILESTONES) {
     if (count >= m && prev < m) {
-      // Check if any previous day (not today) has ever reached this threshold
-      const prevDays = new Set(entries.map(e => dateStr(e.timestamp)));
+      // Check if any previous day (not today) has ever reached this threshold.
+      // Imported days count: the union of days the user typed and days health
+      // supplied, or a milestone first reached on an import-only day would be
+      // announced twice.
+      const prevDays = new Set([
+        ...entries.map(e => dateStr(e.timestamp)),
+        ...healthRows.map(r => r.date),
+      ]);
       prevDays.delete(today);
-      const everReached = [...prevDays].some(d => countForDate(entries, d) >= m);
+      const everReached = [...prevDays].some(d => countForDate(entries, d, healthRows) >= m);
       if (!everReached) {
         const pool = MSG.milestone[m];
         return fill(pick(pool), vars);
@@ -258,7 +271,10 @@ function selectMessage(count, prev, entries, today, tiers, newStreak) {
     return fill(pick(MSG.logged_low), vars);
   }
   if (gained > 0) {
-    // Mix delta-aware with other pools
+    // The delta pool renders "+{gained}", so it is only reachable when the count
+    // ROSE. That matters now that `prev` can come from health: correcting a
+    // health number downward (the phone stayed home) gives a negative gained and
+    // must fall through to the pools below, never render "+-3000".
     const all = [...MSG.logged_delta, ...MSG.logged_simple, ...MSG.logged_playful, ...MSG.logged_absurd, ...MSG.logged_science];
     return fill(pick(all), vars);
   }
@@ -313,12 +329,20 @@ function fmtAvg(n) {
 // =============================================================================
 
 export default function StepsPanel() {
-  const { entries, logSteps, getTodayCount, getStreak, getWeeklyAvg } = useStepsStore();
+  const { entries, logSteps, getTodayCount, getTodaySource, getStreak, getWeeklyAvg } = useStepsStore();
+  // BOTH stores are subscribed deliberately (handoff spec R11a): pulling health
+  // rows out of the health store imperatively, inside a useStepsStore selector,
+  // would read the right number once but would NOT subscribe this component to
+  // health-store changes, so an import would land silently and the panel would
+  // keep showing the old number until something else re-rendered it. A static
+  // test asserts both hooks are called here.
+  const healthRows = useStepsHealthStore(s => s.rows);
   const { setMessage, setShowBubble } = useMessageStore();
 
-  const todayCount = getTodayCount();
-  const streak     = getStreak();
-  const weeklyAvg  = getWeeklyAvg();
+  const todayCount  = getTodayCount(healthRows);
+  const todaySource = getTodaySource(healthRows);
+  const streak      = getStreak(healthRows);
+  const weeklyAvg   = getWeeklyAvg(healthRows);
 
   const allCleared = todayCount >= TIERS[TIERS.length - 1];
   const heroColor  = allCleared
@@ -359,7 +383,14 @@ export default function StepsPanel() {
   }, []);
 
   const openEditor = () => {
-    setInputVal(todayCount > 0 ? String(todayCount) : '');
+    // Prefilled ONLY when today's number is the user's own. commitEdit fires on
+    // blur, so prefilling a health-sourced number would mean that tapping the
+    // hero number to look at it and then tapping away silently pins the day to
+    // whatever health said at that moment, after which the day stops updating.
+    // An empty input parses to NaN and logs nothing, so an accidental open stays
+    // a no-op while a deliberate pin costs one deliberate act: typing it.
+    const prefill = todaySource === 'manual' && todayCount > 0;
+    setInputVal(prefill ? String(todayCount) : '');
     setEditing(true);
     requestAnimationFrame(() => inputRef.current?.focus());
   };
@@ -379,16 +410,25 @@ export default function StepsPanel() {
 
   // --- Log handler ---
   const handleLog = (count) => {
-    const prev    = getTodayCount();
-    if (count === prev) return; // no change, no message
+    // TWO different "previous" values, deliberately (handoff spec R11b):
+    //
+    // The no-op guard uses the MANUAL value, so typing the number health
+    // currently reports still creates a deliberate pin for the day. Guarding on
+    // the resolved count would make that impossible and let the number keep
+    // moving under the user.
+    const manualPrev = manualCountForDate(entries, todayStr());
+    if (count === manualPrev) return; // repeat of a typed value: no entry, no message
+
+    // The message uses the RESOLVED count - the number the user was looking at.
+    const prev = todayCount;
     logSteps(count);
 
     const today = todayStr();
     // Compute streak after the new entry (entries not yet updated in closure,
     // but the replace-style count for today is `count` since it's the latest)
-    const newStreak = count >= TIERS[0] ? getStreak() : streak;
+    const newStreak = count >= TIERS[0] ? getStreak(healthRows) : streak;
 
-    const msg = selectMessage(count, prev, entries, today, TIERS, newStreak);
+    const msg = selectMessage(count, prev, entries, healthRows, today, TIERS, newStreak);
     clearTimeout(bubbleTimer.current);
     setMessage(msg);
     setShowBubble(true);

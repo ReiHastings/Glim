@@ -35,7 +35,7 @@ check('syncBus.js does not import sync.js', !/from ['"]\.\/sync['"]/.test(busSrc
 const domainBlock = busSrc.slice(busSrc.indexOf('export const DOMAINS'), busSrc.indexOf('});', busSrc.indexOf('export const DOMAINS')));
 const DOMAIN_KEYS   = [...domainBlock.matchAll(/^\s+([A-Z_]+):\s+'([a-z-]+)',/gm)].map(m => m[1]);
 const DOMAIN_VALUES = [...domainBlock.matchAll(/^\s+([A-Z_]+):\s+'([a-z-]+)',/gm)].map(m => m[2]);
-check('DOMAINS lists 13 domains', DOMAIN_VALUES.length === 13);
+check('DOMAINS lists 14 domains', DOMAIN_VALUES.length === 14);
 
 // --- sync.js records under exactly those strings ---
 const syncSrc = src('sync.js');
@@ -72,6 +72,26 @@ for (const f of stores) {
     check(`${f}: the inline persist announces the write`, /localStorage\.setItem\([^\n]*\n\s*notifyLocalWrite\(/.test(s));
   }
 }
+
+// --- Health step import: the panel must SUBSCRIBE to both stores (spec R11a) ---
+//
+// Reading health rows through useStepsHealthStore.getState() inside a
+// useStepsStore selector would compile and read the right number once, but it
+// would not subscribe StepsPanel to health-store changes, so an import would
+// land silently and the panel would keep showing the old number until something
+// else re-rendered it. The rows must arrive through the hook.
+const panelSrc = src('components/StepsPanel.jsx');
+check('StepsPanel subscribes to useStepsStore', /useStepsStore\(/.test(panelSrc));
+check('StepsPanel subscribes to useStepsHealthStore', /useStepsHealthStore\(/.test(panelSrc));
+check('StepsPanel does not read the health store via getState()',
+  !/useStepsHealthStore\.getState\(/.test(panelSrc));
+check('no store reads another store via getState() either',
+  !stores.some(f => /use[A-Za-z]+Store\.getState\(/.test(readFileSync(join(storeDir, f), 'utf8'))));
+
+// The hero-number editor must not prefill a health-sourced number: commitEdit
+// fires on blur, so a prefill would let an accidental tap pin the day.
+check('StepsPanel prefills the editor only for a manual value',
+  /todaySource === 'manual'/.test(panelSrc));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

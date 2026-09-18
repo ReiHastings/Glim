@@ -240,6 +240,7 @@ const MUTABLE = Object.freeze({
   'symptoms-library':  { collectionName: 'symptoms-library',  domain: 'symptoms-library',  metaPrefix: 'symptomsLibrary',    storageKey: 'glim-symptoms-library',    arrayField: 'items', stamp: r => r.updatedAt },
   'symptom-categories':{ collectionName: 'symptom-categories',domain: 'symptom-categories',metaPrefix: 'symptomsCategories', storageKey: 'glim-symptoms-categories', arrayField: 'items', stamp: r => r.updatedAt },
   'symptom-days':      { collectionName: 'symptom-days',      domain: 'symptom-days',      metaPrefix: 'symptomDays',        storageKey: 'glim-symptom-days',        arrayField: 'days',  stamp: r => r.updatedAt },
+  'steps-health':      { collectionName: 'steps-health',      domain: 'steps-health',      metaPrefix: 'stepsHealth',        storageKey: 'glim-steps-health',        arrayField: 'rows',  stamp: r => r.updatedAt },
 });
 const EVENT_LOG_DOMAINS = Object.freeze([...Object.values(WRITE_ONCE), ...Object.values(MUTABLE)]);
 
@@ -1235,6 +1236,12 @@ async function syncSymptomClearDays(uid) {
   return syncUpdatedAtCollection(uid, MUTABLE['symptom-days']);
 }
 
+// Step totals imported from a health platform (Phase 2). One mutable row per
+// (source, logical date); the manual steps domain above stays write-once.
+async function syncStepsHealth(uid) {
+  return syncUpdatedAtCollection(uid, MUTABLE['steps-health']);
+}
+
 // =============================================================================
 //  Sync orchestrator
 // =============================================================================
@@ -1266,6 +1273,7 @@ async function syncAll(uid = currentUid) {
     syncSymptomsLibrary(uid),
     syncSymptomsCategories(uid),
     syncSymptomClearDays(uid),
+    syncStepsHealth(uid),
   ]);
   for (const r of results) {
     if (r.status === 'rejected') console.warn('[glim sync] a domain failed in syncAll:', r.reason);

@@ -522,6 +522,7 @@ console.log('I: whole-account invariants');
   seed('users/A/symptoms-library/yl1', { id: 'yl1', createdAt: d(1), updatedAt: d(1) });
   seed('users/A/symptom-categories/c1', { id: 'c1', createdAt: d(1), updatedAt: d(1) });
   seed('users/A/symptom-days/2026-01-05', { id: '2026-01-05', createdAt: d(1), updatedAt: d(1) });
+  seed('users/A/steps-health/healthkit:2026-01-05', { id: 'healthkit:2026-01-05', source: 'healthkit', date: '2026-01-05', steps: 8123, updatedAt: d(1) });
   seed('users/A/pokes/counters', { total: 3, lastModified: d(2) });
   seed('users/A/settings/current', { wellnessInterval: 30, lastModified: d(2) });
   mem.set('glim-pokes', '3');

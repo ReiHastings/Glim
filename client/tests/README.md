@@ -33,8 +33,26 @@ node --import ./tests/register-hooks.mjs tests/symptoms_store.test.mjs
 # newer remote copy, no push may lower a remote updatedAt, failed pushes retry)
 node --import ./tests/register-sync-mocks.mjs tests/symptoms_sync.test.mjs
 
-# Firestore rules structure: one rule per data path, mutable collections gated
+# Firestore rules structure: one rule per data path, mutable collections gated,
+# steps-health field validation present (STATIC only - there is no emulator, so
+# the rules are never evaluated here; the behavioral gate is the deploy plus the
+# manual device/console checks in the Phase 2 handoff spec)
 node tests/firestore_rules.test.mjs
+
+# Health step import, precedence: manual beats imported, a typed zero is a real
+# statement, the clear marker hands a day back to health, and imported days
+# count toward streaks and the weekly average for a user who never types
+node --import ./tests/register-hooks.mjs tests/steps_precedence.test.mjs
+
+# Health step import, date arithmetic: the eight-day window across both DST
+# transitions, folding hourly buckets into Glim's 3 AM day, the clamp, and the
+# metamorphic properties of the fold.
+#
+# THE TZ PREFIX IS REQUIRED, not decoration: toLogicalDateStr resolves through
+# host-local time, so on a UTC host every DST assertion passes vacuously. The
+# pin cannot be set inside the file (ESM evaluates imports first), so the test
+# asserts the timezone as its first check and exits non-zero without it.
+TZ=America/New_York node --import ./tests/register-hooks.mjs tests/steps_health_fold.test.mjs
 
 # Symptom diary Phase 1.5: intensity null policy, categories as entities and the
 # legacy migration, clear-day records, and the settings round trip
