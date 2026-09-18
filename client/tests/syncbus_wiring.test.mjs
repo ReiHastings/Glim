@@ -115,5 +115,32 @@ check('the foreground listener is removed on unmount',
   /appStateChange/.test(appSrc) && /handle\.remove\(\)/.test(appSrc));
 check('the panel-open trigger exists', /reason: 'panel'/.test(panelSrc));
 
+// --- The consent flow and the copy rules (Phase 2, step 6) ---
+//
+// These are prose requirements that no behavioural test can hold: Glim must
+// never tell the user they denied Health access, because iOS refuses to tell
+// the APP that, so any such claim would be a guess presented as a fact.
+const settingsSrc = src('components/settings/StepsSettings.jsx');
+check('the toggle is hidden until the platform says health exists',
+  /available !== true/.test(settingsSrc) && /isAvailable\(\)/.test(settingsSrc));
+check('switching on requests access and then imports',
+  /requestAccess\(\)/.test(settingsSrc) && /reason: 'toggle', force: true/.test(settingsSrc));
+check('a failed request reverts the toggle and clears askedAt',
+  /stepsImport: false, askedAt: null/.test(settingsSrc));
+check('switching off deletes nothing',
+  !/clearRows|removeItem/.test(settingsSrc));
+check('the consent text names the data, the destination, and the no-write promise',
+  /daily step counts/.test(settingsSrc) && /your glim account/.test(settingsSrc)
+  && /never writes/.test(settingsSrc));
+
+for (const [label, src_] of [['settings', settingsSrc], ['panel', panelSrc]]) {
+  check(`${label}: never claims the user denied access`,
+    !/you denied|denied access|access denied/i.test(src_));
+}
+check('the explainer points at the Health app instead of guessing',
+  /Data Access/.test(panelSrc));
+check('the first-import message is shown once per device',
+  /firstImportAnnounced/.test(panelSrc));
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -34,6 +34,7 @@ const EMPTY = Object.freeze({
   askedAt:       null,   // ISO, when the platform prompt was last shown
   emptySince:    null,   // ISO, since when health has returned nothing at all
   firstImportAt: null,   // ISO, when this device first imported a non-zero day
+  firstImportAnnounced: false, // has Glim said something about it (once per device)
 });
 
 /**

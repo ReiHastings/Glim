@@ -44,6 +44,11 @@ node tests/firestore_rules.test.mjs
 # through a dynamic import (so web bundles and this harness never load it)
 node --import ./tests/register-hooks.mjs tests/health_adapter.test.mjs
 
+# NOTE: syncbus_wiring also carries the Phase 2 health-import wiring and copy
+# guards (the panel subscribes to both stores, the device record never reaches
+# the sync bus, and no surface ever claims the user refused Health access -
+# iOS never tells the app that, so any such claim would be a guess).
+
 # Health step import, the service: the four guards (toggle, availability,
 # interval floor, one-at-a-time), the change guard and idempotence, empty-window
 # detection, and the account-switch abandonment asserted MID-LOOP (a guard that

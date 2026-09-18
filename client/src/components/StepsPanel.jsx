@@ -16,10 +16,11 @@
 // Outputs:     Steps panel content (rendered inside CompanionPanel)
 // -----------------------------------------------------------------------------
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useStepsStore, TIERS, countForDate, manualCountForDate, dateStr } from '../stores/useStepsStore';
-import { useStepsHealthStore } from '../stores/useStepsHealthStore';
+import { useStepsHealthStore, rowsForDate } from '../stores/useStepsHealthStore';
 import { importSteps } from '../health/stepsImport';
+import { readDeviceRecord, writeDeviceRecord } from '../health/deviceRecord';
 import { todayStr } from '../utils/dateUtils';
 import { useMessageStore } from '../stores/useMessageStore';
 
@@ -91,6 +92,14 @@ const MSG = {
     'each step uses about 200 muscles. at {count} steps, that\'s... a lot of tiny muscle parties.',
     'walking upright is genuinely one of the weirdest things humans do. you\'re so good at it though.',
     'your body burns about 0.04 calories per step. {count} steps = i\'m not doing that math but it\'s some calories.',
+  ],
+
+  // The first time this device imports a step count from the health platform.
+  // Shown once per device, then never again (a flag in the device record).
+  health_first: [
+    'oh. your phone already counts these. {count} today. i\'ll stop asking you to type.',
+    '{count} steps and you didn\'t have to tell me. we\'ve reached the future.',
+    'health says {count} today. i\'m choosing to believe it.',
   ],
 
   // Tier reached - keyed by tier index (0-3)
@@ -330,7 +339,7 @@ function fmtAvg(n) {
 // =============================================================================
 
 export default function StepsPanel() {
-  const { entries, logSteps, getTodayCount, getTodaySource, getStreak, getWeeklyAvg } = useStepsStore();
+  const { entries, logSteps, clearManualForToday, getTodayCount, getTodaySource, getStreak, getWeeklyAvg } = useStepsStore();
   // BOTH stores are subscribed deliberately (handoff spec R11a): pulling health
   // rows out of the health store imperatively, inside a useStepsStore selector,
   // would read the right number once but would NOT subscribe this component to
@@ -383,6 +392,22 @@ export default function StepsPanel() {
     return () => clearTimeout(bubbleTimer.current);
   }, []);
 
+  // --- Health-import UI state ---
+  //
+  // The device record is plain localStorage, not a store, so nothing re-renders
+  // when it changes. Re-read it whenever health rows change: the import that
+  // just wrote a row is also what may have just set emptySince or firstImportAt.
+  // Derived during render, not in an effect: an effect calling setState here
+  // would mean an extra render pass on every import for a value that is just a
+  // localStorage read. `healthRows` is the cache key rather than an input - the
+  // import that writes a row is the same one that may have set emptySince or
+  // firstImportAt, so the record is worth re-reading exactly when rows change.
+  // healthRows is the cache key rather than an input, which is why the rule
+  // below is silenced: re-read the record exactly when an import has run.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const deviceRecord = useMemo(() => readDeviceRecord(), [healthRows]);
+  const [showExplainer, setShowExplainer] = useState(false);
+
   // --- Health step import, panel-open trigger ---
   //
   // CompanionPanel renders this component conditionally and returns null when no
@@ -398,6 +423,25 @@ export default function StepsPanel() {
     importSteps({ reason: 'panel' }).catch(e =>
       console.warn('[glim health] panel import failed:', e));
   }, []);
+
+  // --- First successful import on this device: Glim says something, once ---
+  //
+  // Gated on a flag in the device record rather than on component state, so it
+  // survives a remount and cannot repeat. The import service sets firstImportAt;
+  // the panel is what notices, because it owns the message bubble's timer (the
+  // service has no component to hang one on).
+  useEffect(() => {
+    if (!deviceRecord.firstImportAt || deviceRecord.firstImportAnnounced) return;
+    if (todayCount <= 0) return;
+    // Writes the flag without re-reading it into state: the memo above is not
+    // invalidated by this write, so the effect's deps do not change and it
+    // cannot fire twice. A later import re-reads the record and sees the flag.
+    writeDeviceRecord({ firstImportAnnounced: true });
+    clearTimeout(bubbleTimer.current);
+    setMessage(fill(pick(MSG.health_first), { count: fmt(todayCount) }));
+    setShowBubble(true);
+    bubbleTimer.current = setTimeout(() => setShowBubble(false), 5000);
+  }, [deviceRecord, todayCount, setMessage, setShowBubble]);
 
   const openEditor = () => {
     // Prefilled ONLY when today's number is the user's own. commitEdit fires on
@@ -454,6 +498,33 @@ export default function StepsPanel() {
 
   const mono = { fontFamily: "'Courier New', monospace" };
 
+  // --- Health-aware subtitle -------------------------------------------------
+  //
+  // Today's imported total, or null when health has nothing for today. Needed
+  // separately from todayCount because a manual entry hides the health row, and
+  // the subtitle names both numbers when they disagree.
+  const healthToday = (() => {
+    const rows = rowsForDate(healthRows, todayStr());
+    if (rows.length === 0) return null;
+    return rows.reduce((a, b) => (String(b.updatedAt) > String(a.updatedAt) ? b : a)).steps;
+  })();
+
+  // The empty state means: this device imports, the prompt has been shown, and
+  // health has returned nothing across the whole window. It is deliberately NOT
+  // shown for a day that simply has no row yet (an import that has not run).
+  const showEmptyHint = todaySource === null && deviceRecord.stepsImport && !!deviceRecord.emptySince;
+
+  const subtitle =
+    todaySource === 'manual' && healthToday !== null
+      ? `your number - health says ${fmt(healthToday)}`
+      : todaySource === 'manual' || (todaySource === null && todayCount > 0)
+        ? 'steps today - tap to update'
+        : todaySource !== null
+          ? 'steps today from health - tap to override'
+          : showEmptyHint
+            ? "health isn't sending anything yet"
+            : 'tap to log your steps';
+
   return (
     <div style={{ padding: '0 16px 16px', ...mono }}>
 
@@ -494,9 +565,56 @@ export default function StepsPanel() {
           </div>
         )}
         <div style={{ fontSize: 'var(--glim-text-sm)', color: 'rgba(200,210,230,0.4)', marginTop: 3 }}>
-          {todayCount === 0 ? 'tap to log your steps' : 'steps today - tap to update'}
+          {subtitle}
         </div>
+        {/* "use health's number" drops the manual entry for today and lets the
+            imported row show again. Shown wherever a health row exists for
+            today, the desktop tab included: the row's presence is a fact about
+            the data, not a claim about this device's permissions. */}
+        {todaySource === 'manual' && healthToday !== null && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); clearManualForToday(); }}
+            style={{
+              marginTop: 4, padding: 0, background: 'none', border: 'none',
+              color: 'rgba(94,234,212,0.7)', fontSize: 'var(--glim-text-xs)',
+              cursor: 'pointer', textDecoration: 'underline', ...mono,
+            }}
+          >
+            use health&apos;s number
+          </button>
+        )}
+        {showEmptyHint && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); setShowExplainer(v => !v); }}
+            style={{
+              marginTop: 4, padding: 0, background: 'none', border: 'none',
+              color: 'rgba(200,210,230,0.35)', fontSize: 'var(--glim-text-xs)',
+              cursor: 'pointer', textDecoration: 'underline', ...mono,
+            }}
+          >
+            why?
+          </button>
+        )}
       </div>
+
+      {/* The explainer must never blame the user for a refusal. iOS deliberately
+          hides a refused read from the app, so Glim genuinely cannot tell that
+          apart from a phone that has counted nothing. It says what it observes
+          and where to look, and a static test enforces the wording. */}
+      {showEmptyHint && showExplainer && (
+        <div style={{
+          margin: '0 0 10px', padding: '8px 10px',
+          background: 'rgba(15,20,35,0.4)', borderRadius: 8,
+          border: '1px solid rgba(100,120,160,0.12)',
+          fontSize: 'var(--glim-text-xs)', color: 'rgba(200,210,230,0.45)', lineHeight: 1.5,
+        }}>
+          health isn&apos;t sending me any steps. that can mean access is off, or your
+          phone just hasn&apos;t counted any yet. if you meant to share, it&apos;s under
+          Settings &gt; Health &gt; Data Access &amp; Devices &gt; Glim. i&apos;ll keep checking quietly.
+        </div>
+      )}
 
       {/* ===== TIER BAR ===== */}
       <div style={{ position: 'relative', height: 8, background: 'rgba(255,255,255,0.06)', borderRadius: 4, margin: '0 2px 2px' }}>
