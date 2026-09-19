@@ -58,6 +58,25 @@ export const VIEWPORTS = {
 // does not error; the store just falls back to its default and the screenshot
 // quietly shows an empty state, so these are worth keeping in step.
 
+// Water at an exact number of bottles logged TODAY.
+//
+// THE 3 AM BOUNDARY IS THE CONSTRAINT HERE. Glim's logical day starts at 03:00
+// and FIXED_NOW is 12:00 local, so only NINE hours of "today" exist: an entry
+// more than nine hours old falls into yesterday and countToday stops seeing
+// it. Entries are therefore spaced one hour apart starting one hour ago, which
+// fits up to nine bottles. A tenth would silently land in yesterday, the panel
+// would render a shorter fill, and nothing would error. That is why every fill
+// view declares what it expects and tests/visual/water_fill.check.mjs asserts
+// the count that actually rendered, rather than trusting the seed.
+const waterAt = (count, goal) => ({
+  entries: Array.from({ length: count }, (_, i) => ({
+    id: id(`wf${i}`), timestamp: iso((i + 1) * HOUR), deletedAt: null,
+  })),
+  bottleOz: 24,
+  goal,
+  configUpdatedAt: iso(30 * DAY),
+});
+
 const water = {
   // Four of a six-bottle goal today, plus three full days behind it so the
   // streak counter has something to show.
@@ -133,6 +152,35 @@ export const VIEWS = {
     seed: { 'glim-water': water, 'glim-steps': steps },
     ui: { activeNav: 'home', activePanel: null },
   },
+  // --- Fill levels -----------------------------------------------------
+  // One view per interesting level of the background fill. `expect` is the
+  // contract: the checker compares the RENDERED fill against these numbers,
+  // not against the store, so a seed that drifts fails instead of passing.
+  'water-0': {
+    description: 'Water panel, nothing logged. The fill must be absent, not a sliver.',
+    seed: { 'glim-water': waterAt(0, 6) },
+    ui: { activeNav: 'water', activePanel: 'water' },
+    expect: { current: 0, goal: 6, pct: 0 },
+  },
+  'water-3': {
+    description: 'Water panel at half. The level the footer legibility turns on.',
+    seed: { 'glim-water': waterAt(3, 6) },
+    ui: { activeNav: 'water', activePanel: 'water' },
+    expect: { current: 3, goal: 6, pct: 50 },
+  },
+  'water-6': {
+    description: 'Water panel at the goal. Accent flips to green, so the fill hue changes.',
+    seed: { 'glim-water': waterAt(6, 6) },
+    ui: { activeNav: 'water', activePanel: 'water' },
+    expect: { current: 6, goal: 6, pct: 100 },
+  },
+  'water-7': {
+    description: 'Over the goal. Must render exactly as 6 of 6: the fraction caps at 1.',
+    seed: { 'glim-water': waterAt(7, 6) },
+    ui: { activeNav: 'water', activePanel: 'water' },
+    expect: { current: 7, goal: 6, pct: 100 },
+  },
+
   water: {
     // Today sits BELOW the goal (4 of 6) while the three days behind it are
     // complete, so the panel shows a partial ring and 'no streak yet'. A
@@ -141,6 +189,7 @@ export const VIEWS = {
     description: 'Water panel, 4 of a 6-bottle goal, three complete days behind it.',
     seed: { 'glim-water': water },
     ui: { activeNav: 'water', activePanel: 'water' },
+    expect: { current: 4, goal: 6, pct: (4 / 6) * 100 },
   },
   steps: {
     description: 'Steps panel between tier 3 and the goal.',
@@ -179,3 +228,6 @@ export const VIEWS = {
 };
 
 export const VIEW_NAMES = Object.keys(VIEWS);
+
+// The views whose `expect` block the fill checker runs against.
+export const FILL_VIEWS = VIEW_NAMES.filter((n) => VIEWS[n].expect);

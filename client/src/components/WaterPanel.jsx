@@ -17,6 +17,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useWaterStore } from '../stores/useWaterStore';
+import { waterFillFraction } from '../utils/waterFill';
 import { useMessageStore } from '../stores/useMessageStore';
 
 // ===== Message pools =====
@@ -244,11 +245,31 @@ export default function WaterPanel() {
   const streak     = getStreak();
   const weeklyAvg  = getWeeklyAvg();
   const goalMet    = current >= goal;
-  const filled     = Math.min((current / Math.max(goal, 1)) * RING_CIRC, RING_CIRC);
+  // One fraction, two visual channels. The ring's previous inline expression
+  // produced NaN for an undefined goal (Math.max(undefined, 1) is NaN), which
+  // reached the DOM as strokeDasharray="NaN NaN". With the background fill
+  // drawing the same number, the two would have disagreed on screen.
+  const fraction   = waterFillFraction(current, goal);
+  const filled     = fraction * RING_CIRC;
 
   const accent       = goalMet ? '#4ade80' : '#60a5fa';
   const accentBg     = goalMet ? 'rgba(74,222,128,0.12)'  : 'rgba(96,165,250,0.15)';
   const accentBorder = goalMet ? 'rgba(74,222,128,0.3)'   : 'rgba(96,165,250,0.3)';
+  // The fill's hue as a bare triplet, because .glim-water-fill composes it with
+  // the swept alpha token inside rgba(). Deliberately NOT following `accent`
+  // to green at the goal: the ring, the button and the oz pill still flip, but
+  // green water stops reading as water. The fill is the one element here whose
+  // job is to look like the substance rather than to signal state.
+  const fillRgb      = '96,165,250';
+
+  // Controls tinted with the accent sit over a fill of the SAME hue, so at
+  // mid-levels they were accent on accent. Each one now paints its tint over an
+  // opaque-enough dark scrim instead of straight onto the water. Layer order:
+  // the tint is the image layer (on top), the scrim is the background-color
+  // (beneath it), so the control keeps its colour and stops competing with the
+  // fill behind it.
+  const SCRIM = 'rgba(8,6,20,0.62)';
+  const overWater = (tint) => `linear-gradient(${tint}, ${tint}), ${SCRIM}`;
 
   // Clear timers on unmount
   useEffect(() => () => {
@@ -291,10 +312,38 @@ export default function WaterPanel() {
   const mono = { fontFamily: "'Courier New', monospace" };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '0 24px 16px' }}>
+    <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', height: '100%', padding: '0 24px 16px' }}>
+
+      {/* Background fill: today's bottles as a rising water level.
+          Decorative only (the ring and the "n/goal" text already state the
+          number), so aria-hidden and pointer-events: none; see .glim-water-fill
+          in index.css for why the latter is load-bearing.
+
+          Its height is a fraction of the panel MINUS the header (see
+          --glim-water-fill-inset), so a full goal tops out just below the
+          header text instead of submerging it.
+
+          Each sibling below carries position: relative so it paints ABOVE this.
+          A positioned element paints in step 8 of the CSS painting order, above
+          both the backgrounds and the inline content of non-positioned in-flow
+          siblings, and positioned siblings at z-index auto paint in DOM order.
+          So the siblings must stay positioned AND stay later in the DOM. No
+          z-index is set anywhere here: adding one would create a stacking
+          context and trap the oz pill's own zIndex: 1, which its tap overlay
+          depends on. */}
+      <div
+        aria-hidden="true"
+        className="glim-water-fill"
+        style={{
+          // Strings, not numbers: a bare number handed to a custom property is
+          // not guaranteed to survive without a unit being appended.
+          '--glim-water-fill-level': String(fraction),
+          '--glim-water-fill-rgb': fillRgb,
+        }}
+      />
 
       {/* Header: label + oz pill */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+      <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
         <span style={{ ...mono, fontSize: 'var(--glim-text-sm)', color: 'rgba(200,210,230,0.35)', letterSpacing: '0.5px' }}>
           water
         </span>
@@ -341,7 +390,7 @@ export default function WaterPanel() {
       </div>
 
       {/* Ring + action area */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 18 }}>
+      <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 18 }}>
 
         {/* Progress ring */}
         <svg viewBox="0 0 72 72" width="100" height="100" style={{ overflow: 'visible' }}>
@@ -409,7 +458,7 @@ export default function WaterPanel() {
           style={{
             position: 'relative',
             display: 'flex', alignItems: 'center', gap: 6,
-            background: accentBg,
+            background: overWater(accentBg),
             border: `1px solid ${accentBorder}`,
             borderRadius: 12, padding: '8px 20px',
             cursor: 'pointer',
@@ -425,8 +474,9 @@ export default function WaterPanel() {
       {/* Undo toast (own row, appears below button row) */}
       {showUndo && (
         <div style={{
+          position: 'relative',
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
-          background: 'rgba(96,165,250,0.08)',
+          background: overWater('rgba(96,165,250,0.08)'),
           border: '1px solid rgba(96,165,250,0.18)',
           borderRadius: 10, padding: '6px 14px',
           marginTop: 6,
@@ -448,9 +498,14 @@ export default function WaterPanel() {
 
       {/* Footer: streak | 7-day avg */}
       <div style={{
+        position: 'relative',
         display: 'flex', justifyContent: 'space-between',
         ...mono, fontSize: 'var(--glim-text-sm)', letterSpacing: '0.5px',
-        color: 'rgba(200,210,230,0.35)',
+        // Raised from 0.35. This row is the last child of a full-height flex
+        // column, so it sits at the very bottom and is behind water at ANY
+        // fill above zero, one bottle included. It was the faintest text in
+        // the panel before anything was drawn behind it.
+        color: 'rgba(200,210,230,0.62)',
         paddingTop: 10,
       }}>
         <span>{streak > 0 ? `${streak}d streak` : 'no streak yet'}</span>

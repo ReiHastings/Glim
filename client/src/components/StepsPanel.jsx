@@ -17,7 +17,11 @@
 // -----------------------------------------------------------------------------
 
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { useStepsStore, TIERS, countForDate, manualCountForDate, dateStr } from '../stores/useStepsStore';
+import {
+  useStepsStore, TIERS, manualCountForDate, dateStr,
+  buildDayIndex, resolveDayFromIndex, resolveDayCount,
+} from '../stores/useStepsStore';
+import { useClockStore } from '../stores/useClockStore';
 import { useStepsHealthStore, rowsForDate } from '../stores/useStepsHealthStore';
 import { importSteps } from '../health/stepsImport';
 import { readDeviceRecord, writeDeviceRecord } from '../health/deviceRecord';
@@ -253,7 +257,11 @@ function selectMessage(count, prev, entries, healthRows, today, tiers, newStreak
         ...healthRows.map(r => r.date),
       ]);
       prevDays.delete(today);
-      const everReached = [...prevDays].some(d => countForDate(entries, d, healthRows) >= m);
+      // ONE index for the whole scan. countForDate per day would rebuild it per
+      // day, which is the quadratic shape this file was just cured of; it only
+      // runs on a milestone crossing, but the cost grows with history.
+      const index = buildDayIndex(entries, healthRows);
+      const everReached = [...prevDays].some(d => resolveDayFromIndex(index, d).count >= m);
       if (!everReached) {
         const pool = MSG.milestone[m];
         return fill(pick(pool), vars);
@@ -339,7 +347,11 @@ function fmtAvg(n) {
 // =============================================================================
 
 export default function StepsPanel() {
-  const { entries, logSteps, clearManualForToday, getTodayCount, getTodaySource, getStreak, getWeeklyAvg } = useStepsStore();
+  // getStreak is read on its own as well as through getDaySummary: handleLog
+  // needs the streak AFTER its write, which the memo cannot supply.
+  const {
+    entries, logSteps, clearManualForToday, getStreak, getDaySummary,
+  } = useStepsStore();
   // BOTH stores are subscribed deliberately (handoff spec R11a): pulling health
   // rows out of the health store imperatively, inside a useStepsStore selector,
   // would read the right number once but would NOT subscribe this component to
@@ -347,12 +359,22 @@ export default function StepsPanel() {
   // keep showing the old number until something else re-rendered it. A static
   // test asserts both hooks are called here.
   const healthRows = useStepsHealthStore(s => s.rows);
+  const logicalDay = useClockStore(s => s.logicalDay);
   const { setMessage, setShowBubble } = useMessageStore();
 
-  const todayCount  = getTodayCount(healthRows);
-  const todaySource = getTodaySource(healthRows);
-  const streak      = getStreak(healthRows);
-  const weeklyAvg   = getWeeklyAvg(healthRows);
+  // The four derived values, from ONE day index, recomputed only when something
+  // they depend on changes. Before this they were four unmemoized calls in the
+  // render body, each rebuilding its own scan: with the panel open that cost
+  // 142 ms of main thread PER POINTER-MOVE EVENT on a phone-class CPU
+  // (docs/plan_steps_derivation_cost.md section 2).
+  //
+  // `logicalDay` is a dependency because the summary reads todayStr() inside,
+  // which no dependency array can see. Without it the panel would keep showing
+  // yesterday's numbers after the 03:00 boundary, and openEditor below would
+  // prefill from them. It changes once a day; see useClockStore.js.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- getDaySummary is a stable store action
+  const { todayCount, todaySource, streak, weeklyAvg } =
+    useMemo(() => getDaySummary(healthRows), [entries, healthRows, logicalDay]);
 
   const allCleared = todayCount >= TIERS[TIERS.length - 1];
   const heroColor  = allCleared
@@ -450,8 +472,18 @@ export default function StepsPanel() {
     // whatever health said at that moment, after which the day stops updating.
     // An empty input parses to NaN and logs nothing, so an accidental open stays
     // a no-op while a deliberate pin costs one deliberate act: typing it.
-    const prefill = todaySource === 'manual' && todayCount > 0;
-    setInputVal(prefill ? String(todayCount) : '');
+    //
+    // RE-DERIVED rather than read from the memo above. The memo is keyed on the
+    // logical day, which is ticked from an interval and from the resume paths;
+    // between the boundary passing and the next tick, the memo still holds
+    // YESTERDAY's count and source. Prefilling from that would let a tap and a
+    // tap away commit yesterday's number as today's manual entry, which then
+    // beats the health import for the whole day - exactly the failure the rest
+    // of this comment exists to prevent, arriving by a different route.
+    const { count: freshCount, source: freshSource } =
+      resolveDayCount(entries, healthRows, todayStr());
+    const prefill = freshSource === 'manual' && freshCount > 0;
+    setInputVal(prefill ? String(freshCount) : '');
     setEditing(true);
     requestAnimationFrame(() => inputRef.current?.focus());
   };
@@ -481,13 +513,20 @@ export default function StepsPanel() {
     if (count === manualPrev) return; // repeat of a typed value: no entry, no message
 
     // The message uses the RESOLVED count - the number the user was looking at.
-    const prev = todayCount;
+    // Re-derived for the same reason as openEditor: across an unticked day
+    // boundary the memo holds yesterday's count, which would make the "+gained"
+    // message compare today's entry against yesterday's total.
+    const today = todayStr();
+    const prev = resolveDayCount(entries, healthRows, today).count;
     logSteps(count);
 
-    const today = todayStr();
     // Compute streak after the new entry (entries not yet updated in closure,
-    // but the replace-style count for today is `count` since it's the latest)
-    const newStreak = count >= TIERS[0] ? getStreak(healthRows) : streak;
+    // but the replace-style count for today is `count` since it's the latest).
+    // Always re-derived, never read from the memo: across an unticked day
+    // boundary the memoized streak is yesterday's. The conditional that used to
+    // avoid this call existed because the call was expensive; it is now under a
+    // millisecond (docs/plan_steps_derivation_cost.md section 10).
+    const newStreak = getStreak(healthRows);
 
     const msg = selectMessage(count, prev, entries, healthRows, today, TIERS, newStreak);
     clearTimeout(bubbleTimer.current);

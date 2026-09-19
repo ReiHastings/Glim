@@ -25,7 +25,7 @@ import { Capacitor } from '@capacitor/core';
 import { auth, db } from './firebase';
 import { startSync, stopSync } from './sync';
 import { importSteps } from './health/stepsImport';
-import { reloadAllStores } from './stores';
+import { reloadAllStores, useClockStore } from './stores';
 import DesktopPet from './DesktopPet.jsx';
 import SignIn from './SignIn.jsx';
 import SplashScreen from './SplashScreen.jsx';
@@ -101,6 +101,10 @@ export default function App() {
         const { App: CapacitorApp } = await import('@capacitor/app');
         const handle = await CapacitorApp.addListener('appStateChange', ({ isActive }) => {
           if (!isActive) return;
+          // Re-read the logical day before anything else. A backgrounded app runs
+          // no timers, so a resume after the day boundary must not leave a panel
+          // showing (or writing against) yesterday. See useClockStore.js.
+          useClockStore.getState().tick();
           importSteps({ reason: 'resume' }).catch(e =>
             console.warn('[glim health] resume import failed:', e));
         });

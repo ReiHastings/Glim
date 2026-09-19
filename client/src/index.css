@@ -21,6 +21,18 @@
   --glim-text-splash-title: 36px; /* splash screen "glim" */
   --glim-text-splash-sub: 17px;  /* splash screen tagline */
   --glim-text-hero: 44px;        /* step count hero number */
+
+  /* Water panel background fill. Alpha only: the hue comes from the panel's
+     accent (blue, or green once the goal is met) and is set inline, because it
+     changes with state rather than with viewport. Swept with
+     tests/visual/sweep.mjs, which is why it is a token and not a literal. */
+  --glim-water-fill-alpha: 0.14;
+
+  /* How far below the top of the panel the water can rise. The header row
+     ("water" and the oz pill) ends 32px down at this breakpoint, so this stops
+     the waterline 10px below the header text rather than letting a full panel
+     swallow it. A length, so it differs per breakpoint with the type scale. */
+  --glim-water-fill-inset: 42px;
 }
 
 @media (max-width: 599px) {
@@ -42,6 +54,14 @@
     --glim-text-splash-title: 32px;
     --glim-text-splash-sub: 15px;
     --glim-text-hero: 40px;
+
+    /* Same value as desktop on purpose. Declared here only because every token
+       must appear in both blocks; see tests/token_parity.test.mjs. */
+    --glim-water-fill-alpha: 0.14;
+
+    /* The header row is 29px here rather than 32px, because the type scale is
+       smaller. Same 10px gap below it. */
+    --glim-water-fill-inset: 39px;
   }
 }
 
@@ -118,4 +138,49 @@ html, body, #root { width: 100%; height: 100%; overflow: hidden; }
   transform: translateX(-50%);
   width: max(100%, 44px);
   height: max(100%, 44px);
+}
+
+
+/* --- Water panel background fill ----------------------------------------
+   A bottom-anchored block whose height is the fraction of today's bottle goal
+   that has been met (see src/utils/waterFill.js). Height and hue are set
+   inline from the component; everything that does not depend on state lives
+   here so the alpha can be swept.
+
+   It is decorative: the same number is already in the ring and in the "4/6"
+   text, so it carries aria-hidden and pointer-events: none. The latter is
+   load-bearing rather than tidy. Without it the fill covers the footer, and at
+   higher levels the "+ bottle" button, and taps stop reaching them.
+
+   The border-top is what makes it read as water rather than as a gradient: it
+   is the waterline.
+
+   The level is a unitless fraction (0 to 1) set inline, not a percentage
+   height, because the water fills only the region BELOW the header: a full
+   panel would otherwise put the waterline above the "water" label and the oz
+   pill and read as a flooded panel rather than a full one. So the height is
+   that fraction of (the panel minus the inset), and 100% now means "up to just
+   below the header text".
+
+   The transition is invisible to the visual harness, which injects
+   `transition: none !important` before mount, so every screenshot is of the
+   end state. The rise is verified by hand on device, not by capture.mjs. */
+.glim-water-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  border-top: 1px solid rgba(var(--glim-water-fill-rgb), calc(var(--glim-water-fill-alpha) * 2.6));
+  background: linear-gradient(
+    to top,
+    rgba(var(--glim-water-fill-rgb), calc(var(--glim-water-fill-alpha) * 1.7)),
+    rgba(var(--glim-water-fill-rgb), var(--glim-water-fill-alpha))
+  );
+  height: calc(var(--glim-water-fill-level, 0) * (100% - var(--glim-water-fill-inset)));
+  transition: height 700ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glim-water-fill { transition: none; }
 }

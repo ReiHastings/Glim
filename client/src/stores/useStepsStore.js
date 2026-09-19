@@ -16,7 +16,7 @@
 
 import { create } from 'zustand';
 import { notifyLocalWrite, DOMAINS } from '../syncBus';
-import { todayStr, dateStr, toLogicalDateStr } from '../utils/dateUtils';
+import { todayStr, dateStr, toLogicalDateStr, logicalDayStart } from '../utils/dateUtils';
 
 // Re-export so existing consumers (StepsPanel) don't break
 export { dateStr };
@@ -71,14 +71,89 @@ function saveSteps(state) {
 //     clearManualForToday to hand the day back to the health import
 // A manual entry OF zero is a real statement and returns 0, not null.
 export function manualCountForDate(entries, dateString) {
-  const dayEntries = (entries ?? []).filter(e => dateStr(e.timestamp) === dateString);
-  if (dayEntries.length === 0) return null;
-  // `>=`, so that two entries sharing a millisecond resolve to the LATER
-  // APPENDED one. Human taps never collide, but clearManualForToday can be
-  // called in the same millisecond as the entry it supersedes, and the clear
-  // must win: the array order is the order the statements were made.
-  const latest = dayEntries.reduce((a, e) => (e.timestamp >= a.timestamp ? e : a));
-  return latest.count ?? null;
+  return resolveManualFromIndex(buildDayIndex(entries, EMPTY), dateString);
+}
+
+// --- Day index -----------------------------------------------------------
+//
+// PERFORMANCE (profiling pass 2026-09-18, docs/plan_steps_derivation_cost.md):
+// the previous implementation re-scanned `entries` once PER DAY WALKED, calling
+// toLocaleDateString (an Intl format) per entry per day. computeStreak was
+// therefore quadratic: 86% of all main-thread time with the panel open, 120 ms
+// at a 365-day streak, and 142 ms per pointer-move event on a phone-class CPU.
+//
+// The index does one pass over each array and answers every date in O(1). It is
+// built per call and lives no longer than the call: there is deliberately NO
+// cross-call cache, because a cache would need an invalidation contract keyed on
+// array identity, and the per-day rescan (not the repeat calls) is the whole
+// cost. See plan section 3.1 and review round 1 finding M7.
+//
+// OWNERSHIP: the returned maps hold references to the caller's elements. Treat
+// the index as read-only and do not retain it across a store write.
+
+// Frozen: this one instance is handed to several callers, so a stray push by a
+// future caller would be a cross-caller bug. Frozen, it throws at the push.
+const EMPTY = Object.freeze([]);
+
+// Labels already reported, so a corrupt blob logs once per session rather than
+// once per call. buildDayIndex runs from the panel memo, from openEditor, from
+// handleLog and from the milestone scan; without this, one bad blob produces a
+// console line on every editor open and every write.
+const reportedBadInput = new Set();
+
+// A malformed localStorage blob must not take the UI down: this runs inside a
+// React render body and the app has no error boundary around the panel, so a
+// throw here is a white screen. Loud in the log, empty in the UI.
+function asArray(value, label) {
+  if (value == null) return EMPTY;
+  if (Array.isArray(value)) return value;
+  if (!reportedBadInput.has(label)) {
+    reportedBadInput.add(label);
+    console.error(`[glim steps] expected an array for ${label}, got ${typeof value}; treating as empty`);
+  }
+  return EMPTY;
+}
+
+// Test seam: lets a test assert the once-per-label behaviour without a fresh
+// module instance.
+export const __resetBadInputReports = () => reportedBadInput.clear();
+
+// Winning manual entry and winning health row per logical date.
+//
+// The two comparisons point in OPPOSITE directions, deliberately:
+//   - entries use `>=`, so the LAST element in array order wins a tie. Load
+//     bearing: clearManualForToday can write a clear marker in the same
+//     millisecond as the entry it supersedes, and the clear must win.
+//   - health rows use strict `>`, so the FIRST element in array order wins a
+//     tie, matching the reduce this replaces.
+// Flipping either silently changes which value a day resolves to. Both are
+// pinned by tests/steps_precedence.test.mjs.
+export function buildDayIndex(entries, healthRows) {
+  const manual = new Map();
+  const health = new Map();
+
+  for (const e of asArray(entries, 'glim-steps entries')) {
+    if (!e) continue;
+    const d = dateStr(e.timestamp);
+    const prev = manual.get(d);
+    if (!prev || e.timestamp >= prev.timestamp) manual.set(d, e);
+  }
+
+  for (const r of asArray(healthRows, 'glim-steps-health rows')) {
+    if (!r?.date) continue;
+    const prev = health.get(r.date);
+    if (!prev || stampMs(r.updatedAt) > stampMs(prev.updatedAt)) health.set(r.date, r);
+  }
+
+  return { manual, health };
+}
+
+// The manual count for a date, from a prebuilt index. Returns null for "no
+// manual statement", which stays distinct from a manual entry OF zero.
+export function resolveManualFromIndex(index, dateString) {
+  const winner = index.manual.get(dateString);
+  if (!winner) return null;
+  return winner.count ?? null;
 }
 
 // Milliseconds of an ISO stamp, mirroring sync.js's ts(): a missing or
@@ -99,15 +174,22 @@ function stampMs(v) {
 // this project never import each other (the panel composes them), and keeping
 // this function pure is what makes the precedence rules testable in bare Node.
 export function resolveDayCount(entries, healthRows, dateString) {
-  const manual = manualCountForDate(entries, dateString);
-  if (manual !== null) return { count: manual, source: 'manual' };
+  return resolveDayFromIndex(buildDayIndex(entries, healthRows), dateString);
+}
 
-  const rows = (healthRows ?? []).filter(r => r?.date === dateString);
-  if (rows.length === 0) return { count: 0, source: null };
+// The same resolution, from a prebuilt index. THIS is the multi-date path:
+// computeStreak, computeWeeklyAvg and the panel's milestone scan build one index
+// and call this per day. It takes the index and NOTHING ELSE, so an index can
+// never be paired with arrays it was not built from - a mismatch that an
+// optional-parameter design would have made silent (review round 2, M2).
+export function resolveDayFromIndex(index, dateString) {
+  const manual = resolveManualFromIndex(index, dateString);
+  if (manual !== null) return { count: manual, source: 'manual' };
 
   // Two rows for one date means two platforms imported for the same account
   // (iOS and Android). Latest write wins; both measure the same person.
-  const best = rows.reduce((a, b) => (stampMs(b.updatedAt) > stampMs(a.updatedAt) ? b : a));
+  const best = index.health.get(dateString);
+  if (!best) return { count: 0, source: null };
   return { count: best.steps, source: best.source };
 }
 
@@ -124,9 +206,21 @@ export function countForDate(entries, dateString, healthRows = []) {
 // the current time of day into setDate() arithmetic can land on a local time
 // that DST skips, which JS normalizes forward an hour and which then shifts the
 // logical date by a whole day. Noon exists on every day in every zone.
-function logicalDaysBack(n) {
-  const anchor = new Date();
-  anchor.setHours(12, 0, 0, 0);
+// ANCHORED ON THE LOGICAL DAY, then at noon (2026-09-18, plan section 3.2).
+//
+// The previous form anchored on `new Date()` at noon, the CALENDAR date. Between
+// 00:00 and DAY_BOUNDARY_HOUR the calendar date is already tomorrow while the
+// logical date is still today, so the walk started on a logical day that had not
+// begun: nothing can be recorded for it, computeStreak breaks at the first day
+// below tier 1, and the streak read exactly 0 for three hours every night. The
+// 7-day average window slid by a day over the same period. This is the pattern
+// health/fold.js:45-46 already used correctly.
+//
+// `now` is injectable so the walk can be asserted at a fixed instant; see
+// tests/steps_day_rollover.test.mjs. Exported for the same reason.
+export function logicalDaysBack(n, now = new Date()) {
+  const anchor = logicalDayStart(toLogicalDateStr(now));  // 03:00 local, today's LOGICAL date
+  anchor.setHours(12, 0, 0, 0);                           // same calendar date, safely mid-day
   const out = [];
   for (let i = 0; i < n; i++) {
     const d = new Date(anchor);
@@ -139,9 +233,20 @@ function logicalDaysBack(n) {
 // Streak: consecutive days reaching tier 1 (2,500 steps), counting back from today.
 // Health-imported days count: a user who never types a number still has a streak.
 function computeStreak(entries, healthRows = []) {
+  return streakFromIndex(buildDayIndex(entries, healthRows));
+}
+
+// 7-day rolling average of daily step counts (using replace-style counts per day)
+function computeWeeklyAvg(entries, healthRows = []) {
+  return weeklyAvgFromIndex(buildDayIndex(entries, healthRows));
+}
+
+// Index-taking forms. One index serves all 365 lookups, which is what removes
+// the quadratic term; see buildDayIndex.
+function streakFromIndex(index) {
   let streak = 0;
   for (const dStr of logicalDaysBack(365)) {
-    if (countForDate(entries, dStr, healthRows) >= TIERS[0]) {
+    if (resolveDayFromIndex(index, dStr).count >= TIERS[0]) {
       streak++;
     } else {
       break;
@@ -150,11 +255,10 @@ function computeStreak(entries, healthRows = []) {
   return streak;
 }
 
-// 7-day rolling average of daily step counts (using replace-style counts per day)
-function computeWeeklyAvg(entries, healthRows = []) {
+function weeklyAvgFromIndex(index) {
   let total = 0;
   for (const dStr of logicalDaysBack(7)) {
-    total += countForDate(entries, dStr, healthRows);
+    total += resolveDayFromIndex(index, dStr).count;
   }
   return Math.round((total / 7) * 10) / 10;
 }
@@ -227,4 +331,20 @@ export const useStepsStore = create((set, get) => ({
   getTodaySource: (healthRows = []) => resolveDayCount(get().entries, healthRows, todayStr()).source,
   getStreak:      (healthRows = []) => computeStreak(get().entries, healthRows),
   getWeeklyAvg:   (healthRows = []) => computeWeeklyAvg(get().entries, healthRows),
+
+  // All four derived values from ONE index, for the panel's memo. Calling the
+  // four selectors above would build four identical indexes per render. They
+  // stay because the tests call them directly and because StepsPanel needs
+  // getStreak on its own after a write.
+  getDaySummary: (healthRows = []) => {
+    const index = buildDayIndex(get().entries, healthRows);
+    const today = todayStr();
+    const { count, source } = resolveDayFromIndex(index, today);
+    return {
+      todayCount:  count,
+      todaySource: source,
+      streak:      streakFromIndex(index),
+      weeklyAvg:   weeklyAvgFromIndex(index),
+    };
+  },
 }));

@@ -28,6 +28,10 @@ node tests/visual/sweep.mjs --view steps --token --glim-text-hero \
 # Measured layout checks (overflow, tap targets, token conformance)
 npm run visual:measure
 
+# Water panel background fill: seed integrity, fill geometry, the cap, and
+# that the fill does not intercept taps
+node tests/visual/water_fill.check.mjs
+
 # Prove those checks still fire
 node tests/visual/measure.mjs --self-test
 ```
@@ -66,6 +70,18 @@ stopped automatically otherwise.
 - `sweep.mjs` - one view, many token values, one labelled contact sheet.
 - `measure.mjs` - the checks that are measured rather than looked at, plus
   `--self-test`.
+- `water_fill.check.mjs` - behavioural checks for the water panel's background
+  fill, in a real browser. Reads the expected values from each view's `expect`
+  block in `views.mjs`, never from the store: asserting the fill against
+  `getToday()` would compare the render to the same number the render used, so
+  a seed that silently loses bottles would still pass. Seed integrity and fill
+  geometry are asserted SEPARATELY, because they fail for different reasons.
+  Also covers the cap (7 of 6 fills to the same height as 6 of 6, which is the
+  narrow claim that is true; the two views are not pixel-identical because the
+  footer's 7-day average includes today), and that the fill takes no pointer
+  events, which `measure.mjs` cannot catch because it reports a covered control
+  as a note that never affects its exit code. Verified red against two
+  mutations: the cap removed, and a seed spaced past the 3 AM boundary.
 - `shots/baseline/` - the blessed reference images, phone and desktop.
   Committed.
 - `shots/current/`, `shots/sweeps/` - run output. Not committed.
@@ -118,6 +134,19 @@ and `.glim-tap-up` for controls clipped at the top or bottom of a container.
 `<input>` cannot carry one, because replaced elements render no pseudo-elements;
 size those with `min-height`.
 
+## Fill-level views and the 3 AM boundary
+
+`water-0`, `water-3`, `water-6` and `water-7` seed an exact number of bottles
+logged today, and each declares what it expects in an `expect` block.
+
+The constraint to know when adding more: Glim's logical day starts at 03:00 and
+the harness clock is pinned to 12:00, so only NINE hours of "today" exist. The
+seeds space entries one hour apart starting one hour ago, which fits up to nine
+bottles. A tenth would silently fall into yesterday, `countToday` would stop
+seeing it, the panel would render a shorter fill, and nothing would error. That
+is exactly why the expected count is declared rather than derived, and it is
+one of the two mutations `water_fill.check.mjs` was verified against.
+
 ## What this does NOT test
 
 Chromium at a phone viewport is not the Capacitor shell:
@@ -125,6 +154,9 @@ Chromium at a phone viewport is not the Capacitor shell:
 - `env(safe-area-inset-*)` resolves to zero here even with `viewport-fit=cover`,
   so notch and home-indicator spacing is not covered. Confirm on device.
 - iOS renders text with different metrics, so exact glyph positions will differ.
+- CSS transitions. The freeze injects `transition: none !important` before
+  mount, so every screenshot is of the end state. The water fill's rise is
+  verified by hand on device, not here.
 
 Treat a pass here as evidence about layout and structure, and keep the device
 check for spacing and type.

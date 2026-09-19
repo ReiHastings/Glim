@@ -58,7 +58,7 @@ node --import ./tests/register-hooks.mjs tests/steps_import.test.mjs
 # Health step import, precedence: manual beats imported, a typed zero is a real
 # statement, the clear marker hands a day back to health, and imported days
 # count toward streaks and the weekly average for a user who never types
-node --import ./tests/register-hooks.mjs tests/steps_precedence.test.mjs
+TZ=America/New_York node --import ./tests/register-hooks.mjs tests/steps_precedence.test.mjs
 
 # Health step import, date arithmetic: the eight-day window across both DST
 # transitions, folding hourly buckets into Glim's 3 AM day, the clamp, and the
@@ -69,6 +69,27 @@ node --import ./tests/register-hooks.mjs tests/steps_precedence.test.mjs
 # pin cannot be set inside the file (ESM evaluates imports first), so the test
 # asserts the timezone as its first check and exits non-zero without it.
 TZ=America/New_York node --import ./tests/register-hooks.mjs tests/steps_health_fold.test.mjs
+
+# Steps derivation change (2026-09-18, docs/plan_steps_derivation_cost.md).
+#
+# steps_index_equivalence is the ORACLE for the change: it holds a frozen copy
+# of the pre-change pure functions and asserts every date in a 180-day window
+# resolves identically through them and through the live module, at seven pinned
+# instants including both DST days, plus the invariants of the day index
+# (permutation invariance, bounded size, degenerate inputs).
+#
+# steps_day_rollover pins the logical-day anchor: the walk must start at the
+# LOGICAL day, not the calendar day. Before the fix the streak read 0 and the
+# weekly average lost a day for the three hours between midnight and the 3 AM
+# boundary. It asserts logicalDaysBack with an injected `now` AND with the
+# DEFAULT argument (the path production takes, and the one a partial fix would
+# leave broken), plus useClockStore.tick: no notification inside a logical day,
+# exactly one across the boundary.
+#
+# BOTH REQUIRE THE TZ PREFIX, for the same reason steps_health_fold does, and
+# both stub the Date CONSTRUCTOR rather than Date.now (see the S4 note above).
+TZ=America/New_York node --import ./tests/register-hooks.mjs tests/steps_index_equivalence.test.mjs
+TZ=America/New_York node --import ./tests/register-hooks.mjs tests/steps_day_rollover.test.mjs
 
 # Symptom diary Phase 1.5: intensity null policy, categories as entities and the
 # legacy migration, clear-day records, and the settings round trip

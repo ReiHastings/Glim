@@ -41,6 +41,7 @@ function check(name, cond) {
 
 const {
   useStepsStore, resolveDayCount, manualCountForDate, countForDate, TIERS,
+  __resetBadInputReports,
 } = await import('../src/stores/useStepsStore.js');
 const { useStepsHealthStore, rowsForDate } = await import('../src/stores/useStepsHealthStore.js');
 const { todayStr, toLogicalDateStr, logicalDayStart } = await import('../src/utils/dateUtils.js');
@@ -63,8 +64,16 @@ function entryOn(dateString, count, offsetMs = 0) {
 }
 
 // The logical date `back` days before today, computed the DST-safe way.
+//
+// ANCHORED ON THE LOGICAL DAY, matching logicalDaysBack (2026-09-18, plan
+// section 3.2). The previous form anchored on the CALENDAR date, the same
+// off-by-one the implementation had. Because helper and implementation shared
+// the bug, the streak assertions below passed at every hour; run between 00:00
+// and DAY_BOUNDARY_HOUR against the corrected implementation they failed,
+// because the fixture was keyed one day off. Verified: with the old helper and
+// the clock stubbed to 01:30, this file failed 2 checks.
 function daysAgo(back) {
-  const d = new Date();
+  const d = logicalDayStart(toLogicalDateStr(new Date()));
   d.setHours(12, 0, 0, 0);
   d.setDate(d.getDate() - back);
   return toLogicalDateStr(d);
@@ -134,6 +143,90 @@ console.log('\n--- resolveDayCount: two sources for one day (E6) ---');
     resolveDayCount([], [row(D, 1, undefined), newer], D).count === 8000);
   check('a row with a malformed stamp never beats a stamped one',
     resolveDayCount([], [row(D, 1, 'not-a-date'), newer], D).count === 8000);
+}
+
+// =============================================================================
+//  Tie-breaks, both directions (plan criterion 3)
+//
+//  The two arrays resolve ties in OPPOSITE directions, and a day index written
+//  for one and copied to the other flips the other silently. A code review
+//  demonstrated the gap: flipping the health comparison from `>` to `>=` left
+//  the whole suite green. These checks exist to make that mutation fail.
+// =============================================================================
+console.log('\n--- tie-breaks: equal stamps, both arrays ---');
+{
+  const D = '2026-06-15';
+
+  // MANUAL: `>=`, so the LAST element in array order wins an equal timestamp.
+  const a = entryOn(D, 5000);
+  const b = { ...entryOn(D, 7000), timestamp: a.timestamp };   // same millisecond
+  check('manual, equal timestamps: the LAST array element wins',
+    manualCountForDate([a, b], D) === 7000);
+  check('manual, equal timestamps, other order: still the last array element',
+    manualCountForDate([b, a], D) === 5000);
+
+  // The case the rule exists for: clearManualForToday can write its marker in
+  // the same millisecond as the entry it supersedes, and the clear must win.
+  const entry = entryOn(D, 5000);
+  const clear = { ...entryOn(D, null), timestamp: entry.timestamp };
+  check('a clear marker in the SAME millisecond supersedes the entry',
+    manualCountForDate([entry, clear], D) === null);
+  check('and an entry written after a same-millisecond clear supersedes it',
+    manualCountForDate([clear, entry], D) === 5000);
+
+  // HEALTH: strict `>`, so the FIRST element in array order wins an equal stamp.
+  const S = '2026-06-15T12:00:00.000Z';
+  const first  = row(D, 3000, S, 'healthkit');
+  const second = row(D, 9000, S, 'health_connect');
+  check('health, equal updatedAt: the FIRST array element wins',
+    resolveDayCount([], [first, second], D).count === 3000);
+  check('health, equal updatedAt, other order: still the first array element',
+    resolveDayCount([], [second, first], D).count === 9000);
+}
+
+// =============================================================================
+//  Malformed input (plan criterion 4)
+//
+//  Two DECLARED behaviour changes of the 2026-09-18 derivation work: a null
+//  element in `entries` is skipped rather than throwing a TypeError, and a
+//  non-array `entries` degrades to empty with one console.error rather than
+//  throwing inside a React render body that has no error boundary above it.
+//  Both were unpinned until a code review mutated them and the suite stayed
+//  green.
+// =============================================================================
+console.log('\n--- malformed input ---');
+{
+  const D = '2026-06-15';
+
+  check('a null element in entries is skipped, not fatal',
+    manualCountForDate([null, entryOn(D, 5000)], D) === 5000);
+  check('a null element in entries does not hide a later entry',
+    manualCountForDate([entryOn(D, 5000), null], D) === 5000);
+  check('entries of only a null element resolves to no manual statement',
+    manualCountForDate([null], D) === null);
+  check('a null element in healthRows is skipped, not fatal',
+    resolveDayCount([], [null, row(D, 9000, '2026-06-15T18:00:00.000Z')], D).count === 9000);
+  check('a health row with no date is skipped',
+    resolveDayCount([], [{ steps: 1, updatedAt: '2026-06-15T18:00:00.000Z' },
+                         row(D, 9000, '2026-06-15T18:00:00.000Z')], D).count === 9000);
+
+  // Non-array input: degrades, logs once, does not throw.
+  __resetBadInputReports();
+  const errors = [];
+  const origError = console.error;
+  console.error = (...a) => errors.push(a.join(' '));
+  let threw = false;
+  let result = null;
+  try {
+    result = resolveDayCount({ not: 'an array' }, [], D);
+    resolveDayCount({ not: 'an array' }, [], D);   // second call: must not log again
+  } catch { threw = true; } finally { console.error = origError; }
+
+  check('a non-array entries blob does not throw', !threw);
+  check('a non-array entries blob resolves to an empty day',
+    result !== null && result.count === 0 && result.source === null);
+  check('and it is reported exactly once per label, not once per call',
+    errors.length === 1 && errors[0].includes('glim-steps entries'));
 }
 
 // =============================================================================

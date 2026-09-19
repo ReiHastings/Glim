@@ -16,6 +16,7 @@
 // -----------------------------------------------------------------------------
 
 import { useCreatureStore } from './useCreatureStore';
+import { useClockStore } from './useClockStore';
 import { useMessageStore } from './useMessageStore';
 import { useSettingsStore } from './useSettingsStore';
 import { useUIStore } from './useUIStore';
@@ -33,6 +34,7 @@ import { useStepsHealthStore } from './useStepsHealthStore';
 
 export {
   useCreatureStore,
+  useClockStore,
   useMessageStore,
   useSettingsStore,
   useUIStore,
@@ -55,6 +57,7 @@ export {
 // above stay in step.
 export const ALL_STORES = [
   useCreatureStore,
+  useClockStore,
   useMessageStore,
   useSettingsStore,
   useUIStore,

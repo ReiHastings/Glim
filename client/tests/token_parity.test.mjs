@@ -58,6 +58,19 @@ const css = readFileSync(join(here, '../src/index.css'), 'utf8');
 // that a parser returning a handful of stray matches fails here.
 const MIN_TOKENS = 10;
 
+// Tokens that are deliberately not lengths, and so are exempt from the px and
+// monotonicity comparisons below.
+//
+// An EXPLICIT LIST, not a blanket "skip anything that is not px". The blanket
+// version is the obvious implementation and it is wrong: it would silently
+// retire the comparison for any token that later acquired a unit typo, such as
+// `--glim-text-md: 1rem`, which is precisely the drift this test exists to
+// catch. Every entry here is asserted to exist, so the list cannot rot into a
+// set of names that no longer mean anything.
+const NON_PX_TOKENS = [
+  '--glim-water-fill-alpha',   // an alpha channel; unitless by definition
+];
+
 let passed = 0, failed = 0;
 function check(name, cond) {
   if (cond) { passed++; console.log(`  ok   ${name}`); }
@@ -138,18 +151,33 @@ check('every media-query token exists in the base block' +
   onlyMobile.length === 0);
 
 // --- The monotonicity convention ----------------------------------------
-// Only px values are comparable. Any token whose pair is not a plain px value
-// is reported rather than skipped: a silent skip would let a unit change
-// retire the comparison without anyone noticing.
+// Only px values are comparable. A token whose pair is not a plain px value is
+// reported rather than skipped, UNLESS it is named in NON_PX_TOKENS: a silent
+// skip would let a unit change retire the comparison without anyone noticing,
+// which is why the exemption is a list that is itself checked rather than a
+// property of the value.
 const px = (v) => (/^-?\d+(\.\d+)?px$/.test(v) ? parseFloat(v) : null);
 
 const shared = [...base.keys()].filter((k) => mobile.has(k)).sort();
-const notComparable = shared.filter((k) => px(base.get(k)) === null || px(mobile.get(k)) === null);
-check('every shared token holds a plain px value on both sides' +
+
+// The exemption list must describe reality, or it is a place for dead names to
+// accumulate and for a real token to hide behind a typo'd entry.
+const staleExempt = NON_PX_TOKENS.filter((k) => !base.has(k) || !mobile.has(k));
+check('every exempt token actually exists in both blocks' +
+      (staleExempt.length ? ` (stale: ${staleExempt.join(', ')})` : ''),
+  staleExempt.length === 0);
+
+const measured = shared.filter((k) => !NON_PX_TOKENS.includes(k));
+check(`the exemption list does not swallow the whole token set ` +
+      `(${measured.length} of ${shared.length} tokens still compared)`,
+  measured.length >= MIN_TOKENS);
+
+const notComparable = measured.filter((k) => px(base.get(k)) === null || px(mobile.get(k)) === null);
+check('every non-exempt shared token holds a plain px value on both sides' +
       (notComparable.length ? ` (not comparable: ${notComparable.join(', ')})` : ''),
   notComparable.length === 0);
 
-const inverted = shared
+const inverted = measured
   .filter((k) => px(base.get(k)) !== null && px(mobile.get(k)) !== null)
   .filter((k) => px(mobile.get(k)) > px(base.get(k)))
   .map((k) => `${k} (${mobile.get(k)} > ${base.get(k)})`);

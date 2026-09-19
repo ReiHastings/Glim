@@ -34,6 +34,7 @@ import { createRoot } from 'react-dom/client';
 import '../../src/index.css';
 import DesktopPet from '../../src/DesktopPet.jsx';
 import { useUIStore } from '../../src/stores/useUIStore';
+import { useWaterStore } from '../../src/stores/useWaterStore';
 import { reloadAllStores } from '../../src/stores';
 
 // The driver seeds localStorage BEFORE the page loads, so the stores hydrate
@@ -41,6 +42,10 @@ import { reloadAllStores } from '../../src/stores';
 // case. reloadAllStores is exposed anyway for re-seeding within one page.
 window.__glim = {
   ui: useUIStore,
+  // Exposed so the fill checker can read the count the store ACTUALLY holds
+  // after hydrating from the seed, rather than inferring it from the rendered
+  // pixels. A seed that silently loses entries is the failure this catches.
+  water: useWaterStore,
   reloadAllStores,
   // Set last, and read by the driver as the readiness signal: a driver that
   // proceeds on DOMContentLoaded alone can screenshot before React has painted.

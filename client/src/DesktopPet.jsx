@@ -23,7 +23,7 @@ import './storage.js';
 import './glim-animations.css';
 import { pickRandom } from './utils';
 import {
-  useCreatureStore, useMessageStore, useSettingsStore,
+  useCreatureStore, useClockStore, useMessageStore, useSettingsStore,
   useUIStore, useJournalStore, usePokesStore, useWaterStore, useStepsStore,
   useNutritionStore, useNutritionLibraryStore,
   useSymptomsStore, useSymptomsLibraryStore,
@@ -139,9 +139,23 @@ export default function DesktopPet() {
   const pupilOffsetRef = useRef({ x: 0, y: 0 });
 
   // ---- Time updates ----
+  //
+  // Also ticks the clock store, which publishes the current LOGICAL day. Panels
+  // that memoize day-dependent derived values depend on that value; without the
+  // tick they would keep showing yesterday's numbers after the day boundary
+  // (see useClockStore.js for why the old whole-tree re-render is not a
+  // substitute). visibilitychange covers the case the interval cannot: a frozen
+  // or backgrounded tab does not run timers, so a resume after the boundary
+  // must re-read the day immediately rather than up to 60 seconds later.
   useEffect(() => {
-    const iv = setInterval(() => { updateTime(); }, 60000);
-    return () => clearInterval(iv);
+    const tickClock = useClockStore.getState().tick;
+    const iv = setInterval(() => { updateTime(); tickClock(); }, 60000);
+    const onVisible = () => { if (!document.hidden) { updateTime(); tickClock(); } };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(iv);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
 
   // Keep sleep ref in sync
