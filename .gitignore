@@ -14,3 +14,7 @@ message_pools/
 
 # Pandoc renders of root markdown (regenerate from source)
 /*.html
+
+# Visual harness run output (the blessed baseline IS committed)
+client/tests/visual/shots/current/
+client/tests/visual/shots/sweeps/

@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- The viewport meta is copied from index.html rather than simplified.
+         viewport-fit=cover is what makes env(safe-area-inset-*) resolve at all;
+         without it the harness would silently render a layout the phone never
+         shows. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Glim visual harness</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/tests/visual/harness.jsx"></script>
+  </body>
+</html>

@@ -9,7 +9,10 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "build:ios": "vite build --mode native",
-    "sync:ios": "npm run build:ios && npx cap sync ios"
+    "sync:ios": "npm run build:ios && npx cap sync ios",
+    "visual": "node tests/visual/capture.mjs",
+    "visual:accept": "node tests/visual/capture.mjs --accept",
+    "visual:measure": "node tests/visual/measure.mjs"
   },
   "dependencies": {
     "@capacitor-firebase/authentication": "^8.5.1",
@@ -33,6 +36,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
+    "playwright": "^1.63.0",
     "tailwindcss": "^4.2.2",
     "vite": "^8.0.1",
     "vite-plugin-pwa": "^1.2.0"
