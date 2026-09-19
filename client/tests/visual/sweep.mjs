@@ -39,7 +39,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureServer, launch, openView } from './browser.mjs';
+import { ensureServer, launch, captureView } from './browser.mjs';
 import { VIEW_NAMES, VIEWPORTS } from './views.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -138,13 +138,11 @@ try {
   const panels = [];
   for (const value of opts.values) {
     process.stdout.write(`  ${opts.token}: ${value} ... `);
-    const page = await openView(browser, {
+    const buf = await captureView(browser, {
       view: opts.view,
       viewport: opts.viewport,
       tokens: { [opts.token]: value },
     });
-    const buf = await page.screenshot();
-    await page.context().close();
     panels.push({ label: value, dataUrl: `data:image/png;base64,${buf.toString('base64')}` });
     console.log('captured');
   }

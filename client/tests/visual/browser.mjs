@@ -320,6 +320,42 @@ export async function openView(browser, { view, viewport = 'phone', tokens = nul
   return Object.assign(page, { __framesSpent: state.spent });
 }
 
+/**
+ * Open a view and screenshot it, retrying once on a timeout.
+ *
+ * The dev server is shared and long-lived, so anything that edits a source file
+ * mid-run (another editor, another agent, a rebuild) makes Vite push an HMR
+ * update into the page. Playwright's screenshot waits for the page to stop
+ * changing and can time out while that is happening. Observed as intermittent
+ * "page.screenshot: Timeout 30000ms exceeded" on unrelated views while source
+ * files were being edited elsewhere.
+ *
+ * Disabling the HMR client is NOT the fix: @vitejs/plugin-react's refresh
+ * preamble depends on it, so stubbing it stops the app mounting at all.
+ *
+ * ONE retry, not a loop. A transient rebuild resolves on a second attempt; a
+ * page that genuinely never settles should fail the run rather than be retried
+ * until it happens to pass.
+ *
+ * @returns {Promise<Buffer>} the PNG
+ */
+export async function captureView(browser, opts, { onError } = {}) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let page;
+    try {
+      page = await openView(browser, opts);
+      if (onError) watchConsole(page, opts.view, onError);
+      return await page.screenshot();
+    } catch (e) {
+      if (attempt === 2 || !/Timeout/.test(String(e))) throw e;
+      console.log(`  note: ${opts.view} timed out, retrying once ` +
+                  `(the dev server was probably rebuilding)`);
+    } finally {
+      await page?.context().close();
+    }
+  }
+}
+
 // Console errors are worth surfacing: a panel that throws renders nothing, and
 // an empty screenshot otherwise looks like a layout problem.
 export function watchConsole(page, label, sink) {

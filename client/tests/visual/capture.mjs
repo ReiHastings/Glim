@@ -41,7 +41,7 @@
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, cpSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureServer, launch, openView, watchConsole } from './browser.mjs';
+import { ensureServer, launch, captureView } from './browser.mjs';
 import { VIEW_NAMES, VIEWS, VIEWPORTS } from './views.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -159,10 +159,7 @@ try {
     console.log(`\n${viewport} (${VIEWPORTS[viewport].width}x${VIEWPORTS[viewport].height})`);
 
     for (const view of opts.views) {
-      const page = await openView(browser, { view, viewport });
-      watchConsole(page, `${viewport}/${view}`, errors);
-      const buf = await page.screenshot();
-      await page.context().close();
+      const buf = await captureView(browser, { view, viewport }, { onError: errors });
 
       const file = join(outDir, `${view}.png`);
       writeFileSync(file, buf);
