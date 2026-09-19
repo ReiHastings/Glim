@@ -1,5 +1,6 @@
 node_modules/
 dist/
+client/dist-perf/
 .DS_Store
 *.log
 .env.local

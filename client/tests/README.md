@@ -118,6 +118,11 @@ node --import ./tests/register-sync-mocks.mjs tests/cursor_pulls.test.mjs
 # Static: every persisting store announces its write on syncBus with a DOMAINS
 # member; syncBus imports nothing from Firebase; no store imports sync/firebase
 node tests/syncbus_wiring.test.mjs
+
+# Performance and behaviour harness (CDP, no dependencies; see tests/perf/README.md).
+# Reports current creature behaviour and main-thread cost; an instrument, not a gate.
+npx vite build --config vite.config.perf.js
+node tests/perf/characterise.mjs
 ```
 
 ## Files
