@@ -332,7 +332,7 @@ function NutrientBar({ nutrient, progress, onPlus }) {
   }
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 7 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 16 }}>
       <div style={{ width: 'var(--glim-nutrition-label-w)', textAlign: 'right', fontFamily: "'Courier New', monospace", fontSize: 'var(--glim-text-xs)', color: 'rgba(200,210,230,0.5)', flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {label}
       </div>
@@ -354,7 +354,8 @@ function NutrientBar({ nutrient, progress, onPlus }) {
 
       <button
         onClick={() => onPlus(key)}
-        style={{ width: 28, height: 28, borderRadius: '50%', border: '1px solid rgba(200,210,230,0.15)', background: 'rgba(200,210,230,0.06)', color: 'rgba(200,210,230,0.6)', fontFamily: "'Courier New', monospace", fontSize: 'var(--glim-text-lg)', lineHeight: 1, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, padding: 0 }}
+        className="glim-tap"
+        style={{ position: 'relative', width: 28, height: 28, borderRadius: '50%', border: '1px solid rgba(200,210,230,0.15)', background: 'rgba(200,210,230,0.06)', color: 'rgba(200,210,230,0.6)', fontFamily: "'Courier New', monospace", fontSize: 'var(--glim-text-lg)', lineHeight: 1, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, padding: 0 }}
       >
         +
       </button>
@@ -392,7 +393,7 @@ function InlineInputRow({ nutrient, onConfirm, onCancel }) {
   });
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 7 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 16 }}>
       <div style={{ width: 'var(--glim-nutrition-label-w)', textAlign: 'right', fontFamily: "'Courier New', monospace", fontSize: 'var(--glim-text-xs)', color: 'rgba(200,210,230,0.5)', flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {label}
       </div>
@@ -679,7 +680,7 @@ export default function NutritionPanel() {
             type="text" value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="search library..."
-            style={{ width: '100%', height: 36, boxSizing: 'border-box', background: 'rgba(200,210,230,0.06)', border: '1px solid rgba(200,210,230,0.12)', borderRadius: 6, color: 'rgba(200,210,230,0.75)', fontFamily: "'Courier New', monospace", fontSize: 'var(--glim-text-lg)', padding: '0 10px', outline: 'none' }}
+            style={{ width: '100%', height: 44, boxSizing: 'border-box', background: 'rgba(200,210,230,0.06)', border: '1px solid rgba(200,210,230,0.12)', borderRadius: 6, color: 'rgba(200,210,230,0.75)', fontFamily: "'Courier New', monospace", fontSize: 'var(--glim-text-lg)', padding: '0 10px', outline: 'none' }}
           />
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '0 8px' }}>
@@ -699,7 +700,8 @@ export default function NutritionPanel() {
       <div style={{ flexShrink: 0, borderTop: '1px solid rgba(200,210,230,0.06)' }}>
         <button
           onClick={() => setStreakExpanded(v => !v)}
-          style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', padding: '7px 20px', background: 'none', border: 'none', cursor: 'pointer' }}
+          className="glim-tap-up"
+          style={{ position: 'relative', display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', padding: '7px 20px', background: 'none', border: 'none', cursor: 'pointer' }}
         >
           <span style={{ fontFamily: "'Courier New', monospace", fontSize: 'var(--glim-text-xs)', color: 'rgba(200,210,230,0.55)', display: 'flex', alignItems: 'center', gap: 6 }}>
             streak: {allStreak} {allStreak === 1 ? 'day' : 'days'}

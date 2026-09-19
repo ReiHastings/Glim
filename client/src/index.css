@@ -61,3 +61,61 @@ html, body, #root { width: 100%; height: 100%; overflow: hidden; }
 @media (pointer: coarse) {
   input:not([type="range"]), textarea, select { font-size: 16px !important; }
 }
+
+/* --- Tap-area expansion -------------------------------------------------
+   Apple's guidance is a 44x44pt minimum tap target, because a fingertip
+   contact patch is 8-10mm across and you cannot see what is under your finger
+   while you tap. Several of Glim's controls are deliberately smaller than that
+   as DRAWINGS: the 32px journal button, the 28px nutrient "+" circles, the
+   28px close button. Growing them would change the design.
+
+   So this expands the tap area instead, with a transparent pseudo-element
+   centred on the control. The overlay is part of the button, so it receives
+   the tap and the button fires; nothing about the visible box changes. max()
+   means only the deficient axis grows: a 145x35 tab gains height and keeps its
+   width, so it cannot start stealing taps from the control beside it.
+
+   Requirements, both enforced by tests/visual/measure.mjs rather than by
+   convention: the element must establish a containing block (add
+   position: relative if it is statically positioned), and two expanded
+   controls must not end up overlapping, since the later one in paint order
+   would silently swallow the other's taps.
+
+   Does NOT work on <input>: replaced elements render no pseudo-elements. Size
+   those with min-height instead. */
+.glim-tap::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: max(100%, 44px);
+  height: max(100%, 44px);
+}
+
+/* Same, but grown DOWNWARD from the control's top edge instead of outward from
+   its centre. For a control sitting at the top of a clipping container, where
+   the centred overlay is cut off above and the area never reaches 44px: the
+   water panel's "24 oz" pill is the case this exists for. */
+.glim-tap-down::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: max(100%, 44px);
+  height: max(100%, 44px);
+}
+
+/* The mirror image, grown UPWARD from the control's bottom edge, for a control
+   sitting at the bottom of a clipping container. The nutrition panel's
+   streak/average summary row is the case this exists for. */
+.glim-tap-up::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: max(100%, 44px);
+  height: max(100%, 44px);
+}

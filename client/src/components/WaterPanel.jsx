@@ -322,7 +322,13 @@ export default function WaterPanel() {
         ) : (
           <button
             onClick={() => { setOzDraft(String(bottleOz)); setEditingOz(true); }}
+            className="glim-tap-down"
             style={{
+              // Down-anchored: this pill sits at the top of the panel's
+              // clipping container, so a centred overlay is cut off above and
+              // the reachable height stops at 37px. zIndex lifts it above the
+              // panel header, which otherwise paints over the overlay.
+              position: 'relative', zIndex: 1,
               ...mono, fontSize: 'var(--glim-text-sm)', letterSpacing: '0.5px',
               color: accent, background: accentBg,
               border: `1px solid ${accentBorder}`, borderRadius: 8,
@@ -399,7 +405,9 @@ export default function WaterPanel() {
         {/* + button (always in DOM) */}
         <button
           onClick={handleLog}
+          className="glim-tap"
           style={{
+            position: 'relative',
             display: 'flex', alignItems: 'center', gap: 6,
             background: accentBg,
             border: `1px solid ${accentBorder}`,

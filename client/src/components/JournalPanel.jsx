@@ -33,7 +33,7 @@ export default function JournalPanel({ onSave }) {
     <>
       {/* ===== JOURNAL BUTTON ===== */}
       <button onClick={() => { setShowJournal(!showJournal); setShowSettings(false); }}
-        className="absolute cursor-pointer" style={{
+        className="absolute cursor-pointer glim-tap" style={{
           top: "calc(env(safe-area-inset-top, 0px) + 16px)", right: 56, zIndex: 50, width: 32, height: 32,
           background: showJournal ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.08)",
           border: "1px solid rgba(255,255,255,0.12)",
@@ -56,14 +56,16 @@ export default function JournalPanel({ onSave }) {
         }}>
           {/* Tab bar */}
           <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-            <button onClick={() => setJournalView("write")} style={{
+            <button onClick={() => setJournalView("write")} className="glim-tap" style={{
+              position: "relative",
               flex: 1, padding: "6px 0", borderRadius: 8, cursor: "pointer",
               background: journalView === "write" ? `hsla(${hue}, ${sat}%, 50%, 0.3)` : "rgba(255,255,255,0.05)",
               border: `1px solid ${journalView === "write" ? `hsla(${hue}, ${sat}%, 60%, 0.4)` : "rgba(255,255,255,0.1)"}`,
               color: "rgba(255,255,255,0.85)", fontFamily: "'Courier New', monospace", fontSize: 'var(--glim-text-sm)',
               letterSpacing: "1px",
             }}>write</button>
-            <button onClick={() => setJournalView("past")} style={{
+            <button onClick={() => setJournalView("past")} className="glim-tap" style={{
+              position: "relative",
               flex: 1, padding: "6px 0", borderRadius: 8, cursor: "pointer",
               background: journalView === "past" ? `hsla(${hue}, ${sat}%, 50%, 0.3)` : "rgba(255,255,255,0.05)",
               border: `1px solid ${journalView === "past" ? `hsla(${hue}, ${sat}%, 60%, 0.4)` : "rgba(255,255,255,0.1)"}`,
@@ -87,7 +89,9 @@ export default function JournalPanel({ onSave }) {
                 {journalPrompt}
               </div>
               <button onClick={() => setJournalPrompt(pickRandom(JOURNAL_PROMPTS))}
+                className="glim-tap"
                 style={{
+                  position: "relative",
                   background: "none", border: "none", cursor: "pointer",
                   color: "rgba(255,255,255,0.35)", fontSize: 'var(--glim-text-xs)', marginBottom: 10,
                   fontFamily: "'Courier New', monospace", padding: 0,
@@ -118,7 +122,9 @@ export default function JournalPanel({ onSave }) {
                 <button
                   onClick={() => { if (journalText.trim()) onSave(journalText); }}
                   disabled={!journalText.trim()}
+                  className="glim-tap"
                   style={{
+                    position: "relative",
                     padding: "6px 16px", borderRadius: 10, cursor: journalText.trim() ? "pointer" : "default",
                     background: journalText.trim() ? `hsla(${hue}, ${sat}%, 50%, 0.3)` : "rgba(255,255,255,0.05)",
                     border: `1px solid ${journalText.trim() ? `hsla(${hue}, ${sat}%, 60%, 0.4)` : "rgba(255,255,255,0.08)"}`,

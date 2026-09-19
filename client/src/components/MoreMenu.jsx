@@ -310,7 +310,9 @@ export default function MoreMenu() {
           </span>
           <button
             onClick={close}
+            className="glim-tap"
             style={{
+              position:       'relative',
               width:          28,
               height:         28,
               borderRadius:   '50%',

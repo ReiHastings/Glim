@@ -388,7 +388,9 @@ export default function SymptomsPanel() {
           {!adding && (
             <button
               onClick={() => setAdding(true)}
+              className="glim-tap"
               style={{
+                position: 'relative',
                 ...MONO, fontSize: 'var(--glim-text-sm)', color: C.textFaint,
                 background: 'transparent', border: `1px dashed ${C.chipBorder}`,
                 borderRadius: 18, padding: '9px 15px', cursor: 'pointer', lineHeight: 1,
@@ -513,12 +515,17 @@ export default function SymptomsPanel() {
         <button
           onClick={handleClearDay}
           disabled={!isClearToday && presentToday}
+          className="glim-tap"
           style={{
+            position: 'relative',
             ...MONO, fontSize: 'var(--glim-text-2xs)', width: '100%',
             color: isClearToday ? C.teal : C.textFaint,
             background: 'none',
             border: `1px solid ${isClearToday ? C.tealBorder : C.fieldBorder}`,
-            borderRadius: 12, padding: '9px 0',
+            // 13px, not 9px: this button sits directly above the nav bar, so an
+            // expanded tap overlay would reach into it and steal nav taps. Real
+            // height is the only way to reach 44px here. Costs 8px of panel.
+            borderRadius: 12, padding: '13px 0',
             cursor: (!isClearToday && presentToday) ? 'default' : 'pointer',
             opacity: (!isClearToday && presentToday) ? 0.5 : 1,
           }}
