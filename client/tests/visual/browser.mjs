@@ -134,9 +134,35 @@ export async function launch() {
  * @param {string} [opts.viewport] a key of VIEWPORTS (default 'phone')
  * @param {Object<string,string>} [opts.tokens] --glim-* overrides, e.g.
  *        { '--glim-text-hero': '52px' }, applied inline on the root element
+ * @param {'reduce'|'no-preference'} [opts.reducedMotion] the motion preference
+ *        to emulate; defaults to 'reduce', matching the committed baselines
  * @returns {Promise<import('playwright').Page>} caller closes the page
  */
-export async function openView(browser, { view, viewport = 'phone', tokens = null }) {
+export async function openView(browser, opts) {
+  // ONE retry, on the readiness wait as well as the load. The dev server is
+  // shared and long-lived, so an edit elsewhere (another editor, another agent,
+  // a rebuild) makes Vite push an update into the page mid-run and the
+  // readiness wait can time out against a page that is being replaced. This
+  // originally lived only around screenshots in captureView, which left
+  // measure.mjs and water_fill.check.mjs exposed to exactly the same failure.
+  //
+  // Bounded deliberately: a transient rebuild clears on a second attempt, while
+  // a page that genuinely never becomes ready should fail the run rather than
+  // be retried until it happens to pass.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      return await openViewOnce(browser, opts);
+    } catch (e) {
+      if (attempt === 2 || !/Timeout/.test(String(e))) throw e;
+      console.log(`  note: ${opts.view} did not become ready, retrying once ` +
+                  `(the dev server was probably rebuilding)`);
+    }
+  }
+}
+
+async function openViewOnce(browser, {
+  view, viewport = 'phone', tokens = null, reducedMotion = 'reduce',
+}) {
   const spec = VIEWS[view];
   if (!spec) throw new Error(`unknown view '${view}'; known: ${Object.keys(VIEWS).join(', ')}`);
   const vp = VIEWPORTS[viewport];
@@ -151,7 +177,10 @@ export async function openView(browser, { view, viewport = 'phone', tokens = nul
     ...deviceOpts,
     timezoneId: TIMEZONE,
     colorScheme: 'dark',
-    reducedMotion: 'reduce',
+    // Defaults to 'reduce', which is what all committed baselines were captured
+    // under. Changing the default re-blesses every one of them, so that is its
+    // own change rather than a side effect of whatever feature needs the option.
+    reducedMotion,
   });
   await context.clock.setFixedTime(new Date(FIXED_NOW));
 
@@ -333,9 +362,9 @@ export async function openView(browser, { view, viewport = 'phone', tokens = nul
  * Disabling the HMR client is NOT the fix: @vitejs/plugin-react's refresh
  * preamble depends on it, so stubbing it stops the app mounting at all.
  *
- * ONE retry, not a loop. A transient rebuild resolves on a second attempt; a
- * page that genuinely never settles should fail the run rather than be retried
- * until it happens to pass.
+ * ONE retry, not a loop, and only around the SCREENSHOT: openView does its own
+ * retry for the load and readiness phases, so the two cover different failure
+ * points rather than nesting.
  *
  * @returns {Promise<Buffer>} the PNG
  */
