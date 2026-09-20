@@ -18,3 +18,5 @@ App/App/config.xml
 # while the repo is public. Re-download from the Firebase console:
 # Project settings > Your apps > Glim iOS > GoogleService-Info.plist
 App/App/GoogleService-Info.plist
+App/App/GoogleService-Info-prod.plist
+App/App/GoogleService-Info-dev.plist

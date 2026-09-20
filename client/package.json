@@ -10,6 +10,8 @@
     "preview": "vite preview",
     "build:ios": "vite build --mode native",
     "sync:ios": "npm run build:ios && npx cap sync ios",
+    "build:ios:dev": "vite build --mode nativedev",
+    "sync:ios:dev": "npm run build:ios:dev && npx cap sync ios",
     "visual": "node tests/visual/capture.mjs",
     "visual:accept": "node tests/visual/capture.mjs --accept",
     "visual:measure": "node tests/visual/measure.mjs"
