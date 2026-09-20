@@ -21,6 +21,7 @@ import WaterPanel from './WaterPanel';
 import StepsPanel from './StepsPanel';
 import NutritionPanel from './NutritionPanel';
 import SymptomsPanel from './SymptomsPanel';
+import CyclePanel from './CyclePanel';
 
 // ===== Per-panel layout overrides =====
 // Default panel height is 42vh. Symptoms is an approved deviation at ~62%: it
@@ -199,6 +200,7 @@ export default function CompanionPanel() {
            activePanel === 'steps'     ? <StepsPanel /> :
            activePanel === 'nutrition' ? <NutritionPanel /> :
            activePanel === 'symptoms'  ? <SymptomsPanel /> :
+           activePanel === 'cycle'     ? <CyclePanel /> :
            <PanelContent type={activePanel} />}
         </div>
       </div>

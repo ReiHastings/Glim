@@ -353,6 +353,15 @@ export default function MoreMenu() {
             available={true}
             onTap={() => openFeature('symptoms')}
           />
+          {/* Cycle, like symptoms, is never in the nav bar: it is sought out,
+              not surfaced. The More menu is its only entry point, and the panel
+              itself stays off until enabled on THIS device. */}
+          <MenuItem
+            Icon={SymptomsMenuIcon}
+            label="cycle"
+            available={true}
+            onTap={() => openFeature('cycle')}
+          />
           <MenuItem Icon={FocusMenuIcon}    label="focus"    available={false} />
           <MenuItem Icon={ExerciseMenuIcon} label="exercise" available={false} />
           <MenuItem Icon={MoodMenuIcon}     label="mood"     available={false} />

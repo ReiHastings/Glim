@@ -119,6 +119,16 @@ node --import ./tests/register-sync-mocks.mjs tests/cursor_pulls.test.mjs
 # member; syncBus imports nothing from Firebase; no store imports sync/firebase
 node tests/syncbus_wiring.test.mjs
 
+# Static: the two parallel --glim-* token blocks in index.css declare the same
+# token names, and no mobile value exceeds its desktop counterpart
+node tests/token_parity.test.mjs
+
+# Visual harness (needs Playwright + Chromium; see tests/visual/README.md).
+# Screenshots every view and diffs against the blessed baseline; the measure
+# pass checks overflow, tap targets and token conformance by MEASUREMENT.
+npm run visual
+npm run visual:measure
+node tests/visual/measure.mjs --self-test   # proves those checks still fire
 # Performance and behaviour harness (CDP, no dependencies; see tests/perf/README.md).
 # Reports current creature behaviour and main-thread cost; an instrument, not a gate.
 npx vite build --config vite.config.perf.js
@@ -183,7 +193,7 @@ node tests/perf/characterise.mjs
   no-op: Firestore grants a request if ANY matching allow is true, so a
   recursive `{document=**}` ownership rule under `/users` alongside the
   per-collection rule granted every write the specific rule denied. Asserts one
-  rule per data path, the five mutable collections gated on create/update (not
+  rule per data path, the seven mutable collections gated on create/update (not
   delete), and `>=`. The emulator run remains the deploy gate.
 - `symptoms_phase15.test.mjs` - the Phase 1.5 decisions that live below the UI:
   the intensity null policy under BOTH policy values plus the round trip proving
@@ -256,6 +266,33 @@ node tests/perf/characterise.mjs
   imports `sync.js` or `firebase.js`; `sync.js` records under exactly the
   `DOMAINS` strings.
 
+- `visual/` - the screenshot harness for layout and aesthetic work: it mounts
+  `DesktopPet` directly (no Firebase, no auth), seeds each view, and captures
+  deterministic screenshots. Two runs of an unchanged app differ by 0.000% of
+  pixels, which is what makes the baseline diff usable; getting there required
+  pinning the clock and timezone, seeding `Math.random`, freezing CSS animation
+  and budgeting `requestAnimationFrame` (the creature's idle loop alone moved
+  0.3-0.6% of pixels per run). `measure.mjs` carries the checks that are
+  measured rather than eyeballed, with `--self-test` as their negative control.
+  NOT a substitute for the device check: `env(safe-area-inset-*)` is zero in
+  Chromium and iOS text metrics differ. Full documentation in
+  `tests/visual/README.md`.
+- `token_parity.test.mjs` - static guard for the design tokens in
+  `src/index.css`, which are declared twice: once in the base `:root` block
+  (desktop, and anything 600px and wider) and once inside
+  `@media (max-width: 599px)`, the block that governs the phone and so the
+  Capacitor build. Nothing in CSS links a token's two definitions except their
+  spelling, so a token added, renamed or removed in one block only does not
+  error: the other viewport silently keeps the wrong value, which reads as
+  deliberate. Asserts the two blocks declare identical token names and that
+  every mobile value is <= its desktop counterpart (the smaller-on-mobile
+  convention, otherwise held only in the author's head). Guarded against
+  vacuous passes: both blocks must be found, the base block must hold at least
+  10 tokens, and the two blocks must account for every `--glim-*` declaration
+  in the file, so adding a THIRD block fails here rather than being ignored.
+  Verified red by hand against four mutations (base-only token, inverted pair,
+  a value switched to `rem`, a third block).
+
 - `register-hooks.mjs` / `resolve-extensionless.mjs` - test-only Node ESM resolve
   hook that appends `.js` to extensionless relative imports so the source modules
   can be imported unchanged. Not application code.
@@ -283,3 +320,61 @@ node tests/perf/characterise.mjs
   application code.
 
 `/verify` reports WARNING for the missing runner-based suite until vitest is adopted.
+
+# Cycle segmentation (Phase 1), fixtures. One per case an earlier draft of the
+# rules got wrong, including `c1`: a single stray mid-cycle `light` day must not
+# swallow the real period nine days later.
+TZ=America/New_York node --import ./tests/register-hooks.mjs tests/cycle_segment.test.mjs
+
+# Cycle segmentation, PROPERTIES. This is the real specification for segment.js;
+# the handoff doc's R8 documents this file, not the other way round. Asserts P1-P8
+# (every effective bleeding day in exactly one cycle, derived starts more than
+# REFRACTORY_DAYS apart, order and translation invariance, and the arithmetic)
+# over 4000 generated histories. It found the orphaned-bleeding-day bug that all
+# 28 fixtures missed. Verified to catch three deliberate mutations of segment.js.
+TZ=America/New_York node --import ./tests/register-hooks.mjs tests/cycle_segment_property.test.mjs
+
+# Cycle prediction: the contract, the branches, and the [28,28,28,28,35,40]
+# regression that a MAD-based interval reported as a 2-day window at top
+# confidence. Calibration lives in the next file, not this one.
+TZ=America/New_York node --import ./tests/register-hooks.mjs tests/cycle_predict.test.mjs
+
+# Cycle prediction CALIBRATION, end to end: generates flow rows from known cycle
+# lengths, runs the real segmentCycles then the real predict, and measures how
+# often the true next period lands in the window the user would have seen.
+# Supersedes an earlier standalone calibration script (deleted) that measured
+# the estimator alone on unfiltered draws and whose suppression gate was
+# unreachable code. Slow (~1 min): it segments tens of thousands of
+# synthetic histories.
+TZ=America/New_York node --import ./tests/register-hooks.mjs tests/cycle_calibration.test.mjs
+
+# Cycle date helpers: addDaysStr / daysBetweenStr. RUN ALL FOUR ZONES. One
+# northern one-hour zone does not test "every timezone", and on UTC the DST
+# assertions pass vacuously - verified by mutation: the DST-unsafe millisecond
+# implementation fails 5 checks under New York, 3 under Lord Howe and Santiago,
+# and 0 under UTC.
+TZ=America/New_York    node --import ./tests/register-hooks.mjs tests/cycle_dates.test.mjs
+TZ=Australia/Lord_Howe node --import ./tests/register-hooks.mjs tests/cycle_dates.test.mjs
+TZ=America/Santiago    node --import ./tests/register-hooks.mjs tests/cycle_dates.test.mjs
+TZ=UTC                 node --import ./tests/register-hooks.mjs tests/cycle_dates.test.mjs
+
+# Cycle flow store: the row shape, the calendar-date ceiling (a date one day
+# past the logical day is ACCEPTED, which is what lets someone log at 01:30),
+# every rejection leaving localStorage byte-identical, soft delete and revival,
+# and tombstoneAll for the scoped delete.
+TZ=America/New_York node --import ./tests/register-hooks.mjs tests/cycle_store.test.mjs
+
+# Cycle read-time join: date -> cycle day. Nothing here is stored on a row.
+TZ=America/New_York node --import ./tests/register-hooks.mjs tests/cycle_phase.test.mjs
+
+# Cycle first-enable: the fixed-id ensure actions, the per-device record, the
+# name-collision predicate and the enable planner. The load-bearing check is
+# CONVERGENCE, not idempotence: it simulates two devices enabling offline and
+# merging, which with random ids would produce duplicate rows with no dedupe path.
+node --import ./tests/register-hooks.mjs tests/cycle_enable.test.mjs
+
+# The obligation every symptom log carries wherever it is logged from: the
+# entry's day stops being a clear day. Most likely check to be forgotten when a
+# NEW surface starts logging symptoms, which is what the cycle panel is. Failing
+# it does not break the display, only the stored record, and only across devices.
+TZ=America/New_York node --import ./tests/register-hooks.mjs tests/cycle_panel_wiring.test.mjs
