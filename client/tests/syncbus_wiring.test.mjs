@@ -35,7 +35,7 @@ check('syncBus.js does not import sync.js', !/from ['"]\.\/sync['"]/.test(busSrc
 const domainBlock = busSrc.slice(busSrc.indexOf('export const DOMAINS'), busSrc.indexOf('});', busSrc.indexOf('export const DOMAINS')));
 const DOMAIN_KEYS   = [...domainBlock.matchAll(/^\s+([A-Z_]+):\s+'([a-z-]+)',/gm)].map(m => m[1]);
 const DOMAIN_VALUES = [...domainBlock.matchAll(/^\s+([A-Z_]+):\s+'([a-z-]+)',/gm)].map(m => m[2]);
-check('DOMAINS lists 14 domains', DOMAIN_VALUES.length === 14);
+check('DOMAINS lists 15 domains', DOMAIN_VALUES.length === 15);
 
 // --- sync.js records under exactly those strings ---
 const syncSrc = src('sync.js');

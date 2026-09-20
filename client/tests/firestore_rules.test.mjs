@@ -45,7 +45,7 @@ check('every data document is matched by the single-level rule',
   /match \/users\/\{userId\}\/\{collectionId\}\/\{docId\} \{/.test(rules));
 
 // --- The gate ---
-const MUTABLE = ['nutrition-library', 'symptoms', 'symptoms-library', 'symptom-categories', 'symptom-days', 'steps-health'];
+const MUTABLE = ['nutrition-library', 'symptoms', 'symptoms-library', 'symptom-categories', 'symptom-days', 'steps-health', 'cycle'];
 const isMutableBody = rules.slice(rules.indexOf('function isMutable'), rules.indexOf('}', rules.indexOf('function isMutable')));
 for (const c of MUTABLE) check(`isMutable lists '${c}'`, isMutableBody.includes(`'${c}'`));
 check('isMutable lists nothing else',

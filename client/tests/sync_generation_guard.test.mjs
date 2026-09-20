@@ -51,14 +51,14 @@ check('stopSync bumps the generation', /generation\+\+/.test(stopBody));
 // helper's own capture is post-await there; 2026-09-10 review finding).
 // touchSignal writes the signal document after the whole run awaited, so it
 // takes the run's generation as a parameter and checks it. syncAll only fans
-// out and awaits; the six one-line mutable wrappers delegate to
+// out and awaits; the seven one-line mutable wrappers delegate to
 // syncUpdatedAtCollection; the scheduler's flushSync only waits and delegates
 // to runSync. All exemptions are verified below.
 // pushEntries (2026-09-13) captures the generation and delegates the loop to
 // pushWriteOnce, which takes it as a parameter (checked below like touchSignal).
 const DELEGATES = new Set(['syncAll', 'syncSymptoms', 'syncSymptomsLibrary',
   'syncSymptomsCategories', 'syncSymptomClearDays', 'syncNutritionLibrary',
-  'syncStepsHealth', 'flushSync']);
+  'syncStepsHealth', 'syncCycle', 'flushSync']);
 const PARAM_GUARDED = new Set(['pushEntries']);
 const decl = /^(?:export )?async function (\w+)\(/gm;
 const names = [];

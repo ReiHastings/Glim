@@ -41,6 +41,7 @@ export const DOMAINS = Object.freeze({
   SYMPTOM_CATEGORIES: 'symptom-categories',
   SYMPTOM_DAYS:       'symptom-days',
   STEPS_HEALTH:       'steps-health',
+  CYCLE:              'cycle',
 });
 
 export const ALL_DOMAINS = Object.freeze(Object.values(DOMAINS));

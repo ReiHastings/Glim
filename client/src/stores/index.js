@@ -31,6 +31,7 @@ import { useSymptomsLibraryStore } from './useSymptomsLibraryStore';
 import { useSymptomsCategoriesStore } from './useSymptomsCategoriesStore';
 import { useSymptomClearDaysStore } from './useSymptomClearDaysStore';
 import { useStepsHealthStore } from './useStepsHealthStore';
+import { useCycleStore } from './useCycleStore';
 
 export {
   useCreatureStore,
@@ -49,6 +50,7 @@ export {
   useSymptomsCategoriesStore,
   useSymptomClearDaysStore,
   useStepsHealthStore,
+  useCycleStore,
 };
 
 // Every store, in one place. Stores with no persistence (creature, message, UI)
@@ -72,6 +74,7 @@ export const ALL_STORES = [
   useSymptomsCategoriesStore,
   useSymptomClearDaysStore,
   useStepsHealthStore,
+  useCycleStore,
 ];
 
 // Re-reads localStorage into every persisted store. Called by the UID-change

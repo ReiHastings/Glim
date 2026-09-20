@@ -21,7 +21,7 @@
 //              it idempotent and safe on any path, including the
 //              fire-and-forget tab-hide flush.
 //
-//              MUTABLE (nutrition-library, symptoms, symptoms-library,
+//              MUTABLE (nutrition-library, symptoms, symptoms-library, cycle,
 //              symptom-categories, symptom-days): rows are edited in place and
 //              carry updatedAt. A blind push of a stale copy overwrites a newer
 //              remote copy INCLUDING its updatedAt, after which last-write-wins
@@ -241,6 +241,7 @@ const MUTABLE = Object.freeze({
   'symptom-categories':{ collectionName: 'symptom-categories',domain: 'symptom-categories',metaPrefix: 'symptomsCategories', storageKey: 'glim-symptoms-categories', arrayField: 'items', stamp: r => r.updatedAt },
   'symptom-days':      { collectionName: 'symptom-days',      domain: 'symptom-days',      metaPrefix: 'symptomDays',        storageKey: 'glim-symptom-days',        arrayField: 'days',  stamp: r => r.updatedAt },
   'steps-health':      { collectionName: 'steps-health',      domain: 'steps-health',      metaPrefix: 'stepsHealth',        storageKey: 'glim-steps-health',        arrayField: 'rows',  stamp: r => r.updatedAt },
+  'cycle':             { collectionName: 'cycle',             domain: 'cycle',             metaPrefix: 'cycle',              storageKey: 'glim-cycle',               arrayField: 'days',  stamp: r => r.updatedAt },
 });
 const EVENT_LOG_DOMAINS = Object.freeze([...Object.values(WRITE_ONCE), ...Object.values(MUTABLE)]);
 
@@ -1242,11 +1243,18 @@ async function syncStepsHealth(uid) {
   return syncUpdatedAtCollection(uid, MUTABLE['steps-health']);
 }
 
+// Cycle flow days. Deletion is by TOMBSTONE (deletedAt), never by removing the
+// document: this pull is cursor-bounded and merges remote rows INTO local, so a
+// remote absence would never reach another device.
+async function syncCycle(uid) {
+  return syncUpdatedAtCollection(uid, MUTABLE['cycle']);
+}
+
 // =============================================================================
 //  Sync orchestrator
 // =============================================================================
 
-// Private fan-out over the 13 domain functions: one full push + pull. Not
+// Private fan-out over the 14 domain functions: one full push + pull. Not
 // exported; the scheduler below (runSync / flushSync) is the only production
 // caller, so a run can never overlap the watermark advance of another one
 // started from outside. Tests reach it through the __test seam. `uid`
@@ -1274,6 +1282,7 @@ async function syncAll(uid = currentUid) {
     syncSymptomsCategories(uid),
     syncSymptomClearDays(uid),
     syncStepsHealth(uid),
+    syncCycle(uid),
   ]);
   for (const r of results) {
     if (r.status === 'rejected') console.warn('[glim sync] a domain failed in syncAll:', r.reason);

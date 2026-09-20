@@ -73,6 +73,7 @@ check(`flushWriteOnce calls pushEntries exactly ${FLUSH_DOMAINS.length} times`,
 const MUTABLE_DOMAINS = [
   'nutrition-library', 'symptoms', 'symptoms-library', 'symptom-categories', 'symptom-days',
   'steps-health',
+  'cycle',
 ];
 for (const col of MUTABLE_DOMAINS) {
   check(`flushWriteOnce does NOT push mutable domain '${col}'`, !body.includes(`'${col}'`));

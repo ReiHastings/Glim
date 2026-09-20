@@ -28,6 +28,7 @@ import {
   useNutritionStore, useNutritionLibraryStore,
   useSymptomsStore, useSymptomsLibraryStore,
   useSymptomsCategoriesStore, useSymptomClearDaysStore, useStepsHealthStore,
+  useCycleStore,
 } from './stores';
 import Background from './components/Background';
 import AmbientBugs from './components/AmbientBugs';
@@ -104,6 +105,7 @@ export default function DesktopPet() {
   const { reload: reloadSymptomsCategories } = useSymptomsCategoriesStore();
   const { reload: reloadSymptomClearDays }   = useSymptomClearDaysStore();
   const { reload: reloadStepsHealth }        = useStepsHealthStore();
+  const { reload: reloadCycle }              = useCycleStore();
 
   // ---- Drag refs ----
   const dragStartRef = useRef(null);
@@ -187,10 +189,11 @@ export default function DesktopPet() {
       if (e.detail?.domains?.includes('symptom-categories')) reloadSymptomsCategories();
       if (e.detail?.domains?.includes('symptom-days'))       reloadSymptomClearDays();
       if (e.detail?.domains?.includes('steps-health'))       reloadStepsHealth();
+      if (e.detail?.domains?.includes('cycle'))              reloadCycle();
     };
     window.addEventListener('glim-data-updated', handler);
     return () => window.removeEventListener('glim-data-updated', handler);
-  }, [reloadJournal, reloadPokes, reloadSettings, reloadWater, reloadSteps, reloadNutrition, reloadNutritionLibrary, reloadSymptoms, reloadSymptomsLibrary, reloadSymptomsCategories, reloadSymptomClearDays, reloadStepsHealth]);
+  }, [reloadJournal, reloadPokes, reloadSettings, reloadWater, reloadSteps, reloadNutrition, reloadNutritionLibrary, reloadSymptoms, reloadSymptomsLibrary, reloadSymptomsCategories, reloadSymptomClearDays, reloadStepsHealth, reloadCycle]);
 
   // ---- Eye tracking ----
   // Uses isSleepingRef so the callback is stable (no dep on specialAnim).
