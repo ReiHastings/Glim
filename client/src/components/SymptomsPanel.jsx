@@ -34,6 +34,7 @@ import { useUIStore } from '../stores/useUIStore';
 import SymptomEntryRow from './SymptomEntryRow';
 import SymptomEditSheet from './SymptomEditSheet';
 import { SYMPTOM_COLORS as C, MONO } from '../utils/symptomTheme';
+import { collidingIds, itemsCollidingWith } from '../utils/symptomNames';
 import { DEFAULT_CATEGORY_ID } from '../utils/symptomCategories';
 import { todayStr, toLogicalDateStr } from '../utils/dateUtils';
 
@@ -149,6 +150,11 @@ export default function SymptomsPanel() {
   const [toast,     setToast]     = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [adding,    setAdding]    = useState(false);
+  // Set when a new symptom's name collides with an existing one. Holds the
+  // pending { name, categoryId, where } so the banner can say which category
+  // already has it, and so a second save of the SAME name and category is read
+  // as confirmation rather than re-warning forever.
+  const [pendingDuplicate, setPendingDuplicate] = useState(null);
   const [pressedId, setPressedId] = useState(null);
   const [clearError, setClearError] = useState(null);
 
@@ -200,7 +206,35 @@ export default function SymptomsPanel() {
   const chips           = library.getActiveItems(recencyById);
   const activeCategories = categories.getActiveCategories();
 
+  // Two library items may legitimately share a NAME across categories: `back
+  // ache` under menstrual for the ones read as cycle-related, and under pain for
+  // the ones that are not. The choice is the user's own attribution and nothing
+  // in the data can derive it.
+  //
+  // The cost is that this grid is flat and RECENCY-sorted, so two identical
+  // chips also swap places whenever one is tapped and no stable position can be
+  // learned. Every surface that names a symptom therefore has to disambiguate
+  // the colliding ones - the chip, the toast, the today list and the edit sheet -
+  // not just the chip, which is the one place the user has not yet acted.
+  const clashing = collidingIds(chips);
+
+  // The category NAME, never colour alone: cat-menstrual (#c98bb9) and cat-pain
+  // (#d98a9c) are near-identical dusty pinks, and `back ache` is exactly the
+  // pair most likely to collide. An archived category reads as "uncategorized"
+  // via getCategoryName, which is authoritative; do not render a colour that
+  // contradicts it.
+  const qualifierFor = (symptomId) =>
+    clashing.has(symptomId)
+      ? categories.getCategoryName(library.getItem(symptomId)?.categoryId)
+      : null;
+
   const nameFor = (symptomId) => library.getItem(symptomId)?.name ?? 'unknown symptom';
+
+  // The name as it must READ wherever a symptom is identified to the user.
+  const labelFor = (symptomId) => {
+    const q = qualifierFor(symptomId);
+    return q ? `${nameFor(symptomId)} (${q})` : nameFor(symptomId);
+  };
 
   const editingEntry = editingId ? symptoms.logs.find(e => e.id === editingId) : null;
 
@@ -283,7 +317,7 @@ export default function SymptomsPanel() {
     // A long press already logged and opened the sheet; the click that follows
     // the pointer release must not log a second entry.
     if (longPressedRef.current) { longPressedRef.current = false; return; }
-    afterLog(symptoms.logMoment(item.id), item.name);
+    afterLog(symptoms.logMoment(item.id), labelFor(item.id));
   };
 
   // Long-press: log FIRST, then open the sheet on the entry that now exists.
@@ -295,7 +329,7 @@ export default function SymptomsPanel() {
     longPressRef.current = setTimeout(() => {
       longPressedRef.current = true;
       setPressedId(null);
-      const id = afterLog(symptoms.logMoment(item.id), item.name);
+      const id = afterLog(symptoms.logMoment(item.id), labelFor(item.id));
       setEditingId(id);
     }, LONG_PRESS_MS);
   };
@@ -305,7 +339,21 @@ export default function SymptomsPanel() {
     setPressedId(null);
   };
 
+  // A name that already exists elsewhere is ALLOWED - per-category attribution is
+  // the point - but it must be deliberate. Creating a second `bloating` silently
+  // would put two identical chips in the grid with nothing to tell them apart and
+  // no record of why. So the first attempt warns and a repeat of the same name
+  // and category proceeds.
   const handleAddSave = (name, categoryId) => {
+    const clash = itemsCollidingWith(name, library.getActiveItems());
+    const confirming = pendingDuplicate
+      && pendingDuplicate.name === name && pendingDuplicate.categoryId === categoryId;
+    if (clash.length > 0 && !confirming) {
+      setPendingDuplicate({ name, categoryId,
+        where: categories.getCategoryName(clash[0].categoryId) });
+      return;
+    }
+    setPendingDuplicate(null);
     // Saving from the grid defines the symptom AND logs it: someone mid-flare
     // adding "jaw pain" wants it recorded, not merely defined.
     const itemId = library.addItem(name, categoryId);
@@ -315,7 +363,7 @@ export default function SymptomsPanel() {
 
   const handleAgain = (entry) => {
     const id = symptoms.logAgain(entry.id);
-    if (id) afterLog(id, nameFor(entry.symptomId));
+    if (id) afterLog(id, labelFor(entry.symptomId));
   };
 
   const handleEnd = (entry) => {
@@ -382,6 +430,12 @@ export default function SymptomsPanel() {
               }}
             >
               {item.name}
+              {clashing.has(item.id) && (
+                <span style={{ display: 'block', marginTop: 3, fontSize: 'var(--glim-text-xs)',
+                  color: C.textFaint, lineHeight: 1 }}>
+                  {categories.getCategoryName(item.categoryId)}
+                </span>
+              )}
             </button>
           ))}
 
@@ -401,11 +455,21 @@ export default function SymptomsPanel() {
           )}
         </div>
 
+        {adding && pendingDuplicate && (
+          <div style={{ ...MONO, fontSize: 'var(--glim-text-xs)', color: C.pillWarmText,
+            background: C.pillWarm, border: `1px solid ${C.chipBorder}`, borderRadius: 10,
+            padding: '8px 11px', marginBottom: 8, lineHeight: 1.4 }}>
+            you already have a "{pendingDuplicate.name}" under {pendingDuplicate.where}.
+            save again to add a separate one - both will show the category so you can
+            tell them apart.
+          </div>
+        )}
+
         {adding && (
           <AddSymptomRow
             categories={activeCategories}
             onSave={handleAddSave}
-            onCancel={() => setAdding(false)}
+            onCancel={() => { setAdding(false); setPendingDuplicate(null); }}
           />
         )}
 

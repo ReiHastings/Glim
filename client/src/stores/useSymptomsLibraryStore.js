@@ -22,7 +22,7 @@
 
 import { create } from 'zustand';
 import { notifyLocalWrite, DOMAINS } from '../syncBus';
-import { LEGACY_CATEGORY_IDS, DEFAULT_CATEGORY_ID } from '../utils/symptomCategories';
+import { LEGACY_CATEGORY_IDS, DEFAULT_CATEGORY_ID, SEED_AT } from '../utils/symptomCategories';
 
 const STORAGE_KEY = 'glim-symptoms-library';
 
@@ -117,6 +117,36 @@ export const useSymptomsLibraryStore = create((set, get) => ({
       return next;
     });
     return item.id;
+  },
+
+  // Creates a library item with a CALLER-SUPPLIED FIXED ID, if and only if no
+  // row with that id exists. Idempotent.
+  //
+  // Fixed id and SEED_AT stamp, not addItem's random id and "now". Two devices
+  // enabling the cycle feature while offline each run this; with random ids the
+  // id-keyed merge would union them into two `cramps` rows with no way to tell
+  // which is which. With a fixed id they converge on one, and a later rename
+  // beats the creation under last-write-wins.
+  //
+  // KEY ORDER IS FIXED HERE so "a repeat write is byte-identical" is a
+  // meaningful claim: JSON.stringify follows insertion order.
+  ensureItem: (row) => {
+    if (!row?.id) return { ok: false, error: 'ensureItem needs a fixed id' };
+    if (get().items.some(i => i.id === row.id)) return { ok: true, created: false };
+    const item = {
+      id:         row.id,
+      name:       row.name,
+      categoryId: row.categoryId ?? DEFAULT_CATEGORY_ID,
+      createdAt:  SEED_AT,
+      updatedAt:  SEED_AT,
+      deletedAt:  null,
+    };
+    set(state => {
+      const next = { ...state, items: [...state.items, item] };
+      saveLibrary(next);
+      return next;
+    });
+    return { ok: true, created: true };
   },
 
   // Rename / recategorize. The updatedAt bump is required by the sync strategy:

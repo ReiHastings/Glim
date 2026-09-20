@@ -48,3 +48,51 @@ export const LEGACY_CATEGORY_IDS = {
 };
 
 export const DEFAULT_CATEGORY_ID = LEGACY_CATEGORY_IDS.other;
+
+// --- Menstrual category (cycle tracking Phase 1) ---
+//
+// NOT in SEED_CATEGORIES, deliberately. Seeding it would put a "menstrual"
+// category in the symptoms panel of every install whether or not the feature is
+// wanted, including on a shared or demo device. It is created on FIRST ENABLE
+// instead, by ensureCategory.
+//
+// Fixed id and SEED_AT stamp for the same reasons the seeds above use them: two
+// devices enabling while offline must converge on ONE row rather than two, and a
+// later rename or archive must beat the creation under last-write-wins.
+//
+// order 4 may tie with a user-made category (addCategory assigns maxOrder + 1).
+// getActiveCategories breaks ties on name, so the result is deterministic; it
+// just is not guaranteed to sit last in the picker.
+export const MENSTRUAL_CATEGORY_ID = 'cat-menstrual';
+export const MENSTRUAL_CATEGORY = Object.freeze({
+  id: MENSTRUAL_CATEGORY_ID, name: 'menstrual', color: '#c98bb9', order: 4,
+});
+
+// Starter library items, also FIXED ID. addItem generates a random id, so two
+// devices enabling offline would create two rows per name and the id-keyed merge
+// would union them into duplicates with no dedupe path - exactly the failure the
+// SEED_CATEGORIES comment above describes.
+//
+// ELEVEN, chosen by Rei 2026-09-19 from a longer candidate list. The set is a
+// balance: enough that the common experiences are one tap away, few enough that
+// the grid does not read as a wall. The "+ add" chip covers everything else.
+//
+// Four of these (back ache, headache, low energy, and arguably anxious) may
+// collide with names already in the user's library under another category. That
+// is ALLOWED and meaningful - `back ache` under menstrual and under pain record
+// two different judgements about the same sensation - but it must be the user's
+// choice. planEnable surfaces any collision before these are created, and the
+// enable screen offers to skip the clashing ones.
+export const MENSTRUAL_STARTERS = Object.freeze([
+  { id: 'sym-menstrual-cramps',            name: 'cramps' },
+  { id: 'sym-menstrual-breast-tenderness', name: 'breast tenderness' },
+  { id: 'sym-menstrual-bloating',          name: 'bloating' },
+  { id: 'sym-menstrual-mood-swing',        name: 'mood swing' },
+  { id: 'sym-menstrual-back-ache',         name: 'back ache' },
+  { id: 'sym-menstrual-headache',          name: 'headache' },
+  { id: 'sym-menstrual-irritability',      name: 'irritability' },
+  { id: 'sym-menstrual-anxious',           name: 'anxious' },
+  { id: 'sym-menstrual-low-energy',        name: 'low energy' },
+  { id: 'sym-menstrual-acne',              name: 'acne' },
+  { id: 'sym-menstrual-cravings',          name: 'cravings' },
+]);

@@ -103,6 +103,34 @@ export const useSymptomsCategoriesStore = create((set, get) => ({
     return category.id;
   },
 
+  // Creates a category with a CALLER-SUPPLIED FIXED ID, if and only if no row
+  // with that id exists. Idempotent: a second call is a no-op, and a repeat
+  // write would be byte-identical anyway.
+  //
+  // Stamped SEED_AT, not "now", for the same reason the seeds are (see
+  // symptomCategories.js): two devices enabling a feature while offline both
+  // create the row, and a fixed past stamp guarantees any real later edit - a
+  // rename, an archive - beats the creation under last-write-wins. Using "now"
+  // would let whichever device enabled LAST silently revert the other's edit.
+  //
+  // Used by the cycle feature's first-enable flow for cat-menstrual. Deliberately
+  // separate from addCategory, which is the user-facing path and must keep
+  // generating random ids.
+  ensureCategory: (row) => {
+    if (!row?.id) return { ok: false, error: 'ensureCategory needs a fixed id' };
+    if (get().items.some(c => c.id === row.id)) return { ok: true, created: false };
+    const category = {
+      color: '#9b96b8', order: 0, ...row,
+      createdAt: SEED_AT, updatedAt: SEED_AT, deletedAt: null,
+    };
+    set(state => {
+      const next = { ...state, items: [...state.items, category] };
+      saveCategories(next);
+      return next;
+    });
+    return { ok: true, created: true };
+  },
+
   // Rename / recolour / reorder. The updatedAt bump is required by the sync
   // strategy: without it the edit never wins the last-write-wins merge and does
   // not propagate cross-device.
