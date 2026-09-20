@@ -41,6 +41,7 @@
 
 import { ensureServer, launch, openView } from './browser.mjs';
 import { VIEWS, FILL_VIEWS } from './views.mjs';
+import { bubbleCount } from '../../src/utils/waterFill.js';
 
 // The rendered percentage is compared to the declared one within this many
 // percentage points. Sub-pixel layout means a 50% fill of an 811px panel does
@@ -78,8 +79,49 @@ function probe() {
   const inset = parseFloat(getComputedStyle(fill).getPropertyValue('--glim-water-fill-inset')) || 0;
   const fillable = Math.max(r.height - inset, 0);
 
+  // The surface straddles the fill's top edge, so the PAINTED water reaches
+  // one amplitude above it. Everything about the header clearance has to be
+  // measured against that, not against the box.
+  const amp = parseFloat(getComputedStyle(fill).getPropertyValue('--glim-water-wave-amp')) || 0;
+  const surface = fill.querySelector('.glim-water-surface');
+  const tracks = [...fill.querySelectorAll('.glim-water-surface-track')];
+  const bubbleEls = [...fill.querySelectorAll('.glim-water-bubble')];
+  const bubbleBox = fill.querySelector('.glim-water-bubbles');
+  const body = fill.querySelector('.glim-water-body');
+
+  // The header row is the first sibling of the fill inside the panel root.
+  const header = [...root.children].find((el) => el !== fill);
+  const headerBottom = header ? header.getBoundingClientRect().bottom : null;
+
+  // Does anything inside the water intercept a tap? Sampled on a grid rather
+  // than at one point, because a single sample can miss a small child.
+  let intercepts = 0;
+  if (f.height > 2) {
+    for (let ix = 1; ix <= 3; ix++) {
+      for (let iy = 1; iy <= 3; iy++) {
+        const hit = document.elementFromPoint(
+          f.left + (f.width * ix) / 4, f.top + (f.height * iy) / 4);
+        if (hit && fill.contains(hit)) intercepts++;
+      }
+    }
+  }
+
   return {
     present: true,
+    amp,
+    headerBottom,
+    paintedTop: f.top - amp,
+    hasSurface: !!surface,
+    hasBody: !!body,
+    trackCount: tracks.length,
+    // The loop is seamless only if each track is exactly twice its container,
+    // because the animation translates it by half itself.
+    trackRatios: tracks.map((t) => (surface.getBoundingClientRect().width > 0
+      ? t.getBoundingClientRect().width / surface.getBoundingClientRect().width : 0)),
+    bubbleCount: bubbleEls.length,
+    bubblesClipped: bubbleBox ? getComputedStyle(bubbleBox).overflow : null,
+    fillOverflow: getComputedStyle(fill).overflow,
+    intercepts,
     fillH: f.height,
     rootH: r.height,
     inset,
@@ -132,6 +174,42 @@ try {
     check(`${view}: the inset is a real value read from the stylesheet`, got.inset > 0);
     check(`${view}: the fill is not negative`, got.fillH >= 0);
 
+    // --- the flowing surface -------------------------------------------
+    const wantBubbles = bubbleCount(want.pct / 100);
+
+    if (want.pct === 0) {
+      // Nothing at all, not transparent things: a transparent element still
+      // paints a compositing layer and still shows in a baseline.
+      check(`${view}: no surface element with no water`, got.hasSurface === false);
+      check(`${view}: no body element with no water`, got.hasBody === false);
+      check(`${view}: no bubbles with no water`, got.bubbleCount === 0);
+    } else {
+      check(`${view}: the surface band exists`, got.hasSurface === true);
+      check(`${view}: both wave tracks are present`, got.trackCount === 2);
+      check(`${view}: each track is exactly twice its container, so the loop has no seam`,
+        got.trackRatios.length === 2 &&
+        got.trackRatios.every((r) => Math.abs(r - 2) < 0.01),
+        got.trackRatios.map((r) => r.toFixed(3)).join(', '));
+      check(`${view}: renders ${wantBubbles} bubble(s) for this level`,
+        got.bubbleCount === wantBubbles, `got ${got.bubbleCount}`);
+      check(`${view}: bubbles are clipped to the water body`,
+        got.bubblesClipped === 'hidden');
+    }
+
+    // The fill must NOT clip, or it would cut off the crest it exists to show.
+    check(`${view}: the fill does not clip its own crest`, got.fillOverflow === 'visible');
+
+    // The bound the amplitude token has to respect. Measured on the PAINTED
+    // water, which is one amplitude above the box every existing check reads.
+    check(`${view}: the painted crest stays clear of the header text`,
+      got.headerBottom !== null && got.paintedTop >= got.headerBottom,
+      `crest at ${got.paintedTop?.toFixed(1)}, header ends ${got.headerBottom?.toFixed(1)}`);
+
+    // measure.mjs cannot catch this: it reports a covered control as a note
+    // that never affects its exit code.
+    check(`${view}: nothing inside the water intercepts taps`,
+      got.intercepts === 0, `${got.intercepts} of 9 sample points hit the fill`);
+
     // 4. The fill must not intercept taps. measure.mjs cannot catch this: it
     //    reports a covered control as a NOTE that never affects its exit code.
     check(`${view}: the fill does not take pointer events`, got.pointerEvents === 'none');
@@ -162,6 +240,32 @@ try {
       `${measured['water-7'].toFixed(2)}% vs ${measured['water-6'].toFixed(2)}%`);
     check('the capped fill fills the whole region below the header',
       Math.abs(measured['water-7'] - 100) <= PCT_TOLERANCE);
+  }
+  // 6. Reduced motion, asserted as a DECISION rather than as a behaviour we
+  //    happen to have. Glim does not suppress the water animation: the app's
+  //    creature animates unconditionally, so stopping one panel would make the
+  //    support look more complete than it is. The rise transition IS suppressed,
+  //    because that rule predates the decision and costs nothing. See the
+  //    Decision Register, 2026-09-19.
+  console.log('\n  reduced motion');
+  for (const pref of ['reduce', 'no-preference']) {
+    const page = await openView(browser, { view: 'water-3', viewport: 'phone', reducedMotion: pref });
+    const r = await page.evaluate(() => {
+      const fill = document.querySelector('.glim-water-fill');
+      const track = fill.querySelector('.glim-water-surface-track');
+      const bubble = fill.querySelector('.glim-water-bubble');
+      return {
+        transition: getComputedStyle(fill).transitionProperty,
+        trackAnim: getComputedStyle(track).animationName,
+        bubbleAnim: getComputedStyle(bubble).animationName,
+      };
+    });
+    await page.context().close();
+    check(`${pref}: the wave still animates`, r.trackAnim === 'glim-water-drift', r.trackAnim);
+    check(`${pref}: the bubbles still animate`, r.bubbleAnim === 'glim-water-rise', r.bubbleAnim);
+    if (pref === 'reduce') {
+      check('reduce: the rise transition is suppressed', r.transition === 'none', r.transition);
+    }
   }
 } finally {
   await browser.close();

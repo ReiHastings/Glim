@@ -80,8 +80,17 @@ stopped automatically otherwise.
   narrow claim that is true; the two views are not pixel-identical because the
   footer's 7-day average includes today), and that the fill takes no pointer
   events, which `measure.mjs` cannot catch because it reports a covered control
-  as a note that never affects its exit code. Verified red against two
-  mutations: the cap removed, and a seed spaced past the 3 AM boundary.
+  as a note that never affects its exit code. Since the flowing surface landed
+  it also covers the wave and the bubbles: the surface band exists, each wave
+  track is exactly twice its container (the animation translates by half, so
+  anything else puts a seam in the loop), the bubble count matches
+  `bubbleCount()` for the level, bubbles are clipped to the water body, the fill
+  does NOT clip its own crest, the painted crest stays clear of the header text,
+  and nothing inside the water intercepts taps on a 3x3 grid. Verified red
+  against seven mutations: the cap removed, a seed spaced past the 3 AM
+  boundary, the fill clipping its crest, the amplitude raised past the header
+  clearance, a track that is no longer two wavelengths, a surface rendered at
+  zero water, and the fill taking pointer events.
 - `shots/baseline/` - the blessed reference images, phone and desktop.
   Committed.
 - `shots/current/`, `shots/sweeps/` - run output. Not committed.
@@ -146,6 +155,34 @@ bottles. A tenth would silently fall into yesterday, `countToday` would stop
 seeing it, the panel would render a shorter fill, and nothing would error. That
 is exactly why the expected count is declared rather than derived, and it is
 one of the two mutations `water_fill.check.mjs` was verified against.
+
+## Motion, and why screenshots are not the evidence for it
+
+The freeze injects `animation-play-state: paused` AND `animation-delay: 0s`
+before mount. The second matters more than it looks: negative delays are how you
+stagger bubbles and phase-offset a parallax wave, and the harness removes them.
+So anything that must be distinguishable in a screenshot has to be
+distinguishable with every animation sitting at its first frame.
+
+That shaped the implementation rather than the other way round:
+
+- The back wave carries a phase offset baked into its PATH, so the two layers
+  are different curves even when both tracks are frozen at `translateX(0)`.
+  Without it the parallax layer would be invisible in every baseline.
+- Each bubble has a static resting depth, so five frozen bubbles are five
+  distinguishable marks rather than one.
+- The bubble rise keyframes deliberately do not set `opacity` at 0%, so a frozen
+  bubble inherits its own opacity of 1. Fading in from 0 would have made the
+  bubbles invisible in every baseline they exist to protect.
+
+The motion itself is a device check, as is the fill's rise transition, since
+`transition: none` is injected too.
+
+`reducedMotion` is an option on `openView`, defaulting to `'reduce'`, which is
+what every committed baseline was captured under. Changing that default
+re-blesses all of them, so it is its own change rather than a side effect of a
+feature. Glim deliberately does not suppress the water animation; see the
+Decision Register, 2026-09-19, and the note in `src/index.css`.
 
 ## What this does NOT test
 

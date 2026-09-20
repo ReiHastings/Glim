@@ -58,18 +58,30 @@ const css = readFileSync(join(here, '../src/index.css'), 'utf8');
 // that a parser returning a handful of stray matches fails here.
 const MIN_TOKENS = 10;
 
-// Tokens that are deliberately not lengths, and so are exempt from the px and
-// monotonicity comparisons below.
+// What KIND of value each token holds. Anything not named here is a length and
+// must be plain px on both sides.
 //
-// An EXPLICIT LIST, not a blanket "skip anything that is not px". The blanket
-// version is the obvious implementation and it is wrong: it would silently
-// retire the comparison for any token that later acquired a unit typo, such as
-// `--glim-text-md: 1rem`, which is precisely the drift this test exists to
-// catch. Every entry here is asserted to exist, so the list cannot rot into a
-// set of names that no longer mean anything.
-const NON_PX_TOKENS = [
-  '--glim-water-fill-alpha',   // an alpha channel; unitless by definition
-];
+// A declared kind, not an exemption list. The obvious implementation is a list
+// of "tokens to skip", and it is weaker in a way that matters: a skip says only
+// "do not check this", so a length token accidentally written `8` instead of
+// `8px` is one careless list addition away from never being checked again.
+// Declaring the kind means every token is checked against something, and the
+// only way to lose coverage is to lie about what a token is.
+const TOKEN_KINDS = {
+  '--glim-water-fill-alpha':      'unitless',  // an alpha channel
+  '--glim-water-wave-period':      'time',
+  '--glim-water-wave-period-back': 'time',
+  '--glim-water-bubble-rise':      'time',
+  '--glim-water-bubble-wobble':    'time',
+};
+
+const KIND_PATTERNS = {
+  px:       /^-?\d+(\.\d+)?px$/,
+  time:     /^\d+(\.\d+)?m?s$/,
+  unitless: /^-?\d+(\.\d+)?$/,
+};
+
+const kindOf = (token) => TOKEN_KINDS[token] ?? 'px';
 
 let passed = 0, failed = 0;
 function check(name, cond) {
@@ -150,32 +162,40 @@ check('every media-query token exists in the base block' +
       (onlyMobile.length ? ` (orphaned: ${onlyMobile.join(', ')})` : ''),
   onlyMobile.length === 0);
 
-// --- The monotonicity convention ----------------------------------------
-// Only px values are comparable. A token whose pair is not a plain px value is
-// reported rather than skipped, UNLESS it is named in NON_PX_TOKENS: a silent
-// skip would let a unit change retire the comparison without anyone noticing,
-// which is why the exemption is a list that is itself checked rather than a
-// property of the value.
-const px = (v) => (/^-?\d+(\.\d+)?px$/.test(v) ? parseFloat(v) : null);
+// --- Kinds and the monotonicity convention -------------------------------
+// Each token is checked against the kind it declares (lengths by default), and
+// only lengths are then compared for size. Checking against a declared kind
+// rather than skipping non-px values is what keeps a unit typo detectable.
+const px = (v) => (KIND_PATTERNS.px.test(v) ? parseFloat(v) : null);
 
 const shared = [...base.keys()].filter((k) => mobile.has(k)).sort();
 
-// The exemption list must describe reality, or it is a place for dead names to
-// accumulate and for a real token to hide behind a typo'd entry.
-const staleExempt = NON_PX_TOKENS.filter((k) => !base.has(k) || !mobile.has(k));
-check('every exempt token actually exists in both blocks' +
-      (staleExempt.length ? ` (stale: ${staleExempt.join(', ')})` : ''),
-  staleExempt.length === 0);
+// A declared kind must describe a token that exists, or the map becomes a place
+// for dead names to accumulate.
+const staleKinds = Object.keys(TOKEN_KINDS).filter((k) => !base.has(k) || !mobile.has(k));
+check('every token with a declared kind exists in both blocks' +
+      (staleKinds.length ? ` (stale: ${staleKinds.join(', ')})` : ''),
+  staleKinds.length === 0);
 
-const measured = shared.filter((k) => !NON_PX_TOKENS.includes(k));
-check(`the exemption list does not swallow the whole token set ` +
-      `(${measured.length} of ${shared.length} tokens still compared)`,
+// Every shared token is checked against its kind, on BOTH sides. This is what
+// catches a length written without its unit, which no skip-list version could.
+const wrongKind = shared.filter((k) => {
+  const re = KIND_PATTERNS[kindOf(k)];
+  return !re.test(base.get(k)) || !re.test(mobile.get(k));
+});
+check('every shared token matches its declared kind on both sides' +
+      (wrongKind.length
+        ? ` (mismatched: ${wrongKind.map((k) => `${k} is not ${kindOf(k)}`).join(', ')})`
+        : ''),
+  wrongKind.length === 0);
+
+// Only lengths can be compared for size, so only lengths carry the
+// monotonicity rule. Guarded so a map that quietly relabelled everything as
+// 'time' could not retire the comparison.
+const measured = shared.filter((k) => kindOf(k) === 'px');
+check(`the kind map leaves a real set of lengths to compare ` +
+      `(${measured.length} of ${shared.length} tokens)`,
   measured.length >= MIN_TOKENS);
-
-const notComparable = measured.filter((k) => px(base.get(k)) === null || px(mobile.get(k)) === null);
-check('every non-exempt shared token holds a plain px value on both sides' +
-      (notComparable.length ? ` (not comparable: ${notComparable.join(', ')})` : ''),
-  notComparable.length === 0);
 
 const inverted = measured
   .filter((k) => px(base.get(k)) !== null && px(mobile.get(k)) !== null)

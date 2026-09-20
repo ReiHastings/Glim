@@ -33,6 +33,26 @@
      the waterline 10px below the header text rather than letting a full panel
      swallow it. A length, so it differs per breakpoint with the type scale. */
   --glim-water-fill-inset: 42px;
+
+  /* Half the height of the surface band, and the amplitude of the BACK
+     (parallax) wave, which is the taller of the two. The front wave is a fixed
+     fraction of it, set in JS, so there is one number to tune rather than two
+     that must be kept in a ratio.
+
+     BOUNDED BY THE INSET. The crest rises this far above the true waterline, so
+     at a full goal the painted water reaches (inset - this) below the panel
+     top. It must stay clear of the header text, which ends 32px down here.
+     tests/visual/water_fill.check.mjs asserts that relation rather than
+     trusting these two numbers to be edited together. */
+  --glim-water-wave-amp: 8px;
+
+  /* One wavelength is always one panel width (see WAVE_UNITS in
+     src/utils/waterFill.js), so these are speeds, not distances. The back wave
+     is slower, which is what makes it read as further away. */
+  --glim-water-wave-period: 9s;
+  --glim-water-wave-period-back: 17s;
+  --glim-water-bubble-rise: 12s;
+  --glim-water-bubble-wobble: 3.4s;
 }
 
 @media (max-width: 599px) {
@@ -62,6 +82,15 @@
     /* The header row is 29px here rather than 32px, because the type scale is
        smaller. Same 10px gap below it. */
     --glim-water-fill-inset: 39px;
+
+    /* The header is 29px here rather than 32px, so the same 8px crest keeps a
+       larger clearance. Unchanged from desktop on purpose: the wave should not
+       be a different shape on a phone. */
+    --glim-water-wave-amp: 8px;
+    --glim-water-wave-period: 9s;
+    --glim-water-wave-period-back: 17s;
+    --glim-water-bubble-rise: 12s;
+    --glim-water-bubble-wobble: 3.4s;
   }
 }
 
@@ -171,16 +200,131 @@ html, body, #root { width: 100%; height: 100%; overflow: hidden; }
   right: 0;
   bottom: 0;
   pointer-events: none;
-  border-top: 1px solid rgba(var(--glim-water-fill-rgb), calc(var(--glim-water-fill-alpha) * 2.6));
+  height: calc(var(--glim-water-fill-level, 0) * (100% - var(--glim-water-fill-inset)));
+  transition: height 700ms cubic-bezier(0.22, 1, 0.36, 1);
+  /* NOT hidden. The crest has to paint above this element's top edge, and
+     clipping here would cut off exactly the part that makes it a wave: the
+     result would be a straight edge with shape visible only in the troughs.
+     The bubbles need clipping, but to the water BODY, so they get their own
+     container below. */
+  overflow: visible;
+}
+
+/* The body of the water: everything below the trough line. It starts one
+   amplitude down, so the surface band above it can paint the region between
+   the curve and the body without doubling up on alpha where the two meet. */
+.glim-water-body {
+  position: absolute;
+  top: var(--glim-water-wave-amp);
+  left: 0;
+  right: 0;
+  bottom: 0;
   background: linear-gradient(
     to top,
     rgba(var(--glim-water-fill-rgb), calc(var(--glim-water-fill-alpha) * 1.7)),
     rgba(var(--glim-water-fill-rgb), var(--glim-water-fill-alpha))
   );
-  height: calc(var(--glim-water-fill-level, 0) * (100% - var(--glim-water-fill-inset)));
-  transition: height 700ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+/* The surface band straddles the fill element's top edge: one amplitude above,
+   one below. The wave's mean line therefore sits exactly on the true water
+   level, with the crest above and the trough below, so the panel reads at the
+   level the data says. A band sitting entirely above the edge would overstate
+   the level by a constant. */
+.glim-water-surface {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(-1 * var(--glim-water-wave-amp));
+  height: calc(2 * var(--glim-water-wave-amp));
+  overflow: hidden;
+}
+
+/* Twice the panel width, translated by exactly half itself, i.e. exactly one
+   wavelength, so the curve arriving is the curve that left and the loop has no
+   seam. The transform lives on this HTML wrapper rather than on the SVG's
+   children: a percentage translate resolves against this element's own border
+   box, which is exact at any viewport, and WebKit composites it. */
+.glim-water-surface-track {
+  position: absolute;
+  inset: 0;
+  width: 200%;
+  animation: glim-water-drift var(--glim-water-wave-period) linear infinite;
+}
+.glim-water-surface-track.is-back {
+  animation-duration: var(--glim-water-wave-period-back);
+}
+.glim-water-surface svg { display: block; width: 100%; height: 100%; }
+
+/* The gradient edge: transparent at the crest, full water alpha by the bottom
+   of the band, where the body takes over at the same alpha so the two meet
+   without a seam. Declared here rather than as SVG attributes so the stops can
+   read the custom properties. */
+.glim-water-surface .glim-stop-top    { stop-color: rgba(var(--glim-water-fill-rgb), 0); }
+.glim-water-surface .glim-stop-bottom { stop-color: rgba(var(--glim-water-fill-rgb), var(--glim-water-fill-alpha)); }
+.glim-water-surface .glim-stop-bottom-back {
+  stop-color: rgba(var(--glim-water-fill-rgb), calc(var(--glim-water-fill-alpha) * 0.55));
+}
+
+@keyframes glim-water-drift {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+
+/* Bubbles are clipped to the body, so one that rises past the surface simply
+   stops being drawn rather than floating over the header. */
+.glim-water-bubbles {
+  position: absolute;
+  top: var(--glim-water-wave-amp);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+}
+
+/* Two nested elements so rise and wobble are independent transforms rather
+   than one animation trying to express both.
+   The wrapper is the full height of the water column, so translateY(-100%)
+   carries the dot exactly from the bottom of the water to the top, at any fill
+   level, without anything needing to know the column's height in pixels. */
+.glim-water-bubble {
+  position: absolute;
+  bottom: 0;
+  height: 100%;
+  animation: glim-water-rise var(--glim-water-bubble-rise) linear infinite;
+}
+.glim-water-bubble-dot {
+  position: absolute;
+  bottom: var(--glim-bubble-depth, 0px);
+  width: var(--glim-bubble-size, 3px);
+  height: var(--glim-bubble-size, 3px);
+  border-radius: 50%;
+  background: rgba(205, 228, 255, 0.26);
+  animation: glim-water-wobble var(--glim-water-bubble-wobble) ease-in-out infinite alternate;
+}
+
+/* Opacity is deliberately absent from the 0% keyframe. The visual harness
+   freezes every animation at t=0, so a bubble that faded in from opacity 0
+   would be invisible in every screenshot and the baselines could not protect
+   it. Leaving 0% alone means the element's own opacity (1) applies there. */
+@keyframes glim-water-rise {
+  from { transform: translateY(0); }
+  85%  { opacity: 1; }
+  to   { transform: translateY(-100%); opacity: 0; }
+}
+@keyframes glim-water-wobble {
+  from { transform: translateX(-4px); }
+  to   { transform: translateX(4px); }
+}
+
+/* The rise transition is suppressed under reduced motion, but the water's
+   flowing surface and bubbles deliberately are NOT, and neither is the
+   creature. Glim does not currently honour this setting app-wide, and
+   suppressing one panel while an animated creature loops behind it would make
+   that support look more complete than it is. Treated as an open accessibility
+   item to be taken on app-wide, creature included, rather than as a per-feature
+   media query. See the Decision Register, 2026-09-19, in
+   docs/glim_project_history.Rmd. */
 @media (prefers-reduced-motion: reduce) {
   .glim-water-fill { transition: none; }
 }

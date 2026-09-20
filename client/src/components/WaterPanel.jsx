@@ -17,7 +17,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useWaterStore } from '../stores/useWaterStore';
-import { waterFillFraction } from '../utils/waterFill';
+import { waterFillFraction, bubbleCount, wavePath, WAVE_UNITS } from '../utils/waterFill';
 import { useMessageStore } from '../stores/useMessageStore';
 
 // ===== Message pools =====
@@ -222,6 +222,33 @@ function selectMessage(current, goal, bottleOz, streak) {
 // ===== Component =====
 
 // Ring constants (viewBox 0 0 72 72, radius 30)
+// The surface band is --glim-water-wave-amp tall on each side of the waterline,
+// and the BACK wave uses all of it: in viewBox units that is half the band
+// height. The front wave is a fixed fraction of the back one, so there is a
+// single amplitude token to tune rather than two that must be kept in a ratio.
+const FRONT_AMP_RATIO = 0.625;
+// The back wave is drawn half a wavelength out of phase. In motion the two
+// speeds would separate them anyway; the offset is what keeps them
+// distinguishable in a screenshot, where the harness freezes both tracks at
+// translateX(0) and they would otherwise coincide exactly.
+const BACK_PHASE = Math.PI;
+const WAVE_BACK  = wavePath(WAVE_UNITS.height / 2, BACK_PHASE);
+const WAVE_FRONT = wavePath((WAVE_UNITS.height / 2) * FRONT_AMP_RATIO);
+
+// Bubble placement is a fixed table, never Math.random: the visual harness
+// seeds Math.random but the app does not, so a random layout would differ
+// between the harness and the phone, and the baselines would be protecting a
+// picture no user ever sees. `depth` also gives each bubble a distinct resting
+// height, which is what makes them distinguishable in a frozen screenshot
+// after the harness zeroes every animation-delay.
+const BUBBLES = [
+  { left: '16%', size: '4.5px', depth: '1px',  wobble: '-0.4s' },
+  { left: '34%', size: '2.6px', depth: '9px',  wobble: '-1.9s' },
+  { left: '52%', size: '3.5px', depth: '4px',  wobble: '-0.9s' },
+  { left: '71%', size: '4.5px', depth: '13px', wobble: '-2.6s' },
+  { left: '87%', size: '2.6px', depth: '6px',  wobble: '-1.3s' },
+];
+
 const RING_R    = 30;
 const RING_CIRC = 2 * Math.PI * RING_R; // ~188.5, rounds to 188 in mockup
 
@@ -251,6 +278,7 @@ export default function WaterPanel() {
   // drawing the same number, the two would have disagreed on screen.
   const fraction   = waterFillFraction(current, goal);
   const filled     = fraction * RING_CIRC;
+  const bubbles    = bubbleCount(fraction);
 
   const accent       = goalMet ? '#4ade80' : '#60a5fa';
   const accentBg     = goalMet ? 'rgba(74,222,128,0.12)'  : 'rgba(96,165,250,0.15)';
@@ -340,7 +368,71 @@ export default function WaterPanel() {
           '--glim-water-fill-level': String(fraction),
           '--glim-water-fill-rgb': fillRgb,
         }}
-      />
+      >
+        {/* Nothing at all when there is no water: not a transparent surface and
+            not zero bubbles' worth of empty elements. A transparent element
+            still paints a compositing layer and still shows in a screenshot as
+            a faint mark, and views.mjs states the same contract for the fill
+            ("absent, not a sliver"). */}
+        {fraction > 0 && (
+          <>
+            <div className="glim-water-body" />
+
+            {/* Two tracks, each twice the panel wide and translated by exactly
+                half itself, so the loop is seamless. The back one is taller and
+                slower, which is what reads as depth. */}
+            <div className="glim-water-surface">
+              <div className="glim-water-surface-track is-back">
+                <svg viewBox={`0 0 ${WAVE_UNITS.span} ${WAVE_UNITS.height}`} preserveAspectRatio="none">
+                  <defs>
+                    <linearGradient id="glim-wave-back" x1="0" y1="0" x2="0" y2="1">
+                      <stop className="glim-stop-top" offset="0" />
+                      <stop className="glim-stop-bottom-back" offset="1" />
+                    </linearGradient>
+                  </defs>
+                  <path d={WAVE_BACK} fill="url(#glim-wave-back)" />
+                </svg>
+              </div>
+              <div className="glim-water-surface-track">
+                <svg viewBox={`0 0 ${WAVE_UNITS.span} ${WAVE_UNITS.height}`} preserveAspectRatio="none">
+                  <defs>
+                    <linearGradient id="glim-wave-front" x1="0" y1="0" x2="0" y2="1">
+                      <stop className="glim-stop-top" offset="0" />
+                      <stop className="glim-stop-bottom" offset="1" />
+                    </linearGradient>
+                  </defs>
+                  <path d={WAVE_FRONT} fill="url(#glim-wave-front)" />
+                </svg>
+              </div>
+            </div>
+
+            <div className="glim-water-bubbles">
+              {BUBBLES.slice(0, bubbles).map((b, i) => (
+                <div
+                  key={b.left}
+                  className="glim-water-bubble"
+                  style={{
+                    left: b.left,
+                    // Spread over the cycle as a FRACTION of the rise token, so
+                    // retuning the speed keeps them evenly spaced instead of
+                    // bunching them.
+                    animationDelay: `calc(var(--glim-water-bubble-rise) * -${(i / BUBBLES.length).toFixed(2)})`,
+                  }}
+                >
+                  <div
+                    className="glim-water-bubble-dot"
+                    style={{
+                      '--glim-bubble-size': b.size,
+                      '--glim-bubble-depth': b.depth,
+                      animationDelay: b.wobble,
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
 
       {/* Header: label + oz pill */}
       <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
