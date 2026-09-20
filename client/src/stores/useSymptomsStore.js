@@ -17,7 +17,7 @@
 
 import { create } from 'zustand';
 import { notifyLocalWrite, DOMAINS } from '../syncBus';
-import { todayStr, toLogicalDateStr, logicalDayStart } from '../utils/dateUtils';
+import { todayStr, toLogicalDateStr, logicalDayStart, addDaysStr } from '../utils/dateUtils';
 
 const STORAGE_KEY = 'glim-symptoms';
 
@@ -94,12 +94,6 @@ function weekStartStr(dateString) {
   const d = logicalDayStart(dateString);
   const dow = (d.getDay() + 6) % 7;  // 0 = Monday
   d.setDate(d.getDate() - dow);
-  return toLogicalDateStr(d);
-}
-
-function addDaysStr(dateString, days) {
-  const d = logicalDayStart(dateString);
-  d.setDate(d.getDate() + days);
   return toLogicalDateStr(d);
 }
 
