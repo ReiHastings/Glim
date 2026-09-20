@@ -1,0 +1,7 @@
+{
+  "projects": {
+    "default": "glim-dev",
+    "dev": "glim-dev",
+    "prod": "glim-da8c2"
+  }
+}
