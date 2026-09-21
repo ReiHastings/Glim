@@ -38,6 +38,14 @@
 //   cd client
 //   TZ=America/New_York node --import ./tests/register-hooks.mjs tests/steps_index_equivalence.test.mjs
 
+// --- Timezone guard (hard). The DST instants in Criterion 2 prove nothing
+//     under any other zone; the warning that used to be printed there is
+//     kept, but the run now fails up front instead of passing vacuously. ---
+if (process.env.TZ !== 'America/New_York') {
+  console.error('FAIL this test must run under TZ=America/New_York (see tests/README.md)');
+  process.exit(1);
+}
+
 // --- localStorage shim. Must exist before the stores are imported, so the
 //     imports below are dynamic rather than hoisted. ---
 const mem = new Map();
@@ -219,10 +227,7 @@ const INSTANTS = [
   { label: 'DST fall back, 01:30',           ms: localInstant(2026, 11, 1,  1, 30), inWindow: true  },
 ];
 
-console.log(`\n=== Criterion 2: exact-output equivalence (TZ=${process.env.TZ ?? 'unset'}) ===`);
-if (process.env.TZ !== 'America/New_York') {
-  console.warn('  WARNING: not running under TZ=America/New_York; the DST instants prove nothing.');
-}
+console.log(`\n=== Criterion 2: exact-output equivalence (TZ=${process.env.TZ}) ===`);
 
 for (const inst of INSTANTS) {
   withClock(inst.ms, () => {

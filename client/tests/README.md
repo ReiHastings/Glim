@@ -8,6 +8,25 @@ non-zero on failure. The absence of a broader suite is tracked in
 
 ## Running
 
+### Everything at once
+
+```bash
+npm test              # every test except the slow calibration run (about 5 s)
+npm run test:all      # everything, 33 runs from 30 files (about 65 s locally, 80 s on CI); what CI runs
+node tests/run-all.mjs --only cycle    # a subset, by file-name substring
+node tests/run-all.mjs --self-test     # proves the runner's own checks fire
+```
+
+`tests/run-all.mjs` holds a manifest of runs: the `--import` hook and the `TZ`
+pin for each file, with `cycle_dates` listed under all four zones. Before any
+test executes, the runner checks that every `tests/*.test.mjs` has a row and
+that each file's header `usage:` block agrees with its rows, so a new test
+cannot be silently skipped and the manifest cannot drift from the files. Every
+row carries an explicit zone (`America/New_York` when the file's own usage line
+names none), because on CI the host zone is UTC.
+
+### One at a time
+
 From `client/`:
 
 ```bash
@@ -319,7 +338,7 @@ node tests/perf/characterise.mjs
   before the acknowledged one, modelling attach-while-writing). Not
   application code.
 
-`/verify` reports WARNING for the missing runner-based suite until vitest is adopted.
+`/verify` runs `npm test` (the `test` script exists as of 2026-09-20; see Running above). vitest remains the intended eventual harness.
 
 # Cycle segmentation (Phase 1), fixtures. One per case an earlier draft of the
 # rules got wrong, including `c1`: a single stray mid-cycle `light` day must not

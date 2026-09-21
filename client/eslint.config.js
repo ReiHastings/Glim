@@ -7,6 +7,17 @@ import { defineConfig, globalIgnores } from 'eslint/config'
 export default defineConfig([
   globalIgnores(['dist', 'dist-perf', 'ios']),   // dist-perf: tests/perf build output
   {
+    // The test runner is the one .mjs file under lint. The 30 standalone
+    // tests are not (yet); see docs/plan_stage0_ci.md Section 2.5.
+    files: ['tests/run-all.mjs'],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: globals.node,
+    },
+  },
+  {
     files: ['**/*.{js,jsx}'],
     extends: [
       js.configs.recommended,

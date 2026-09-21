@@ -11,7 +11,7 @@
 //   defaults to epoch so it cannot clobber a returning user's real remote config).
 //
 // usage:
-//   cd client && node tests/water_softdelete.test.mjs
+//   cd client && node --import ./tests/register-hooks.mjs tests/water_softdelete.test.mjs
 
 // --- Minimal localStorage shim (Node has none). Must exist before the store is
 //     imported, so the import is dynamic (below) rather than static/hoisted. ---

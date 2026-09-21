@@ -19,7 +19,15 @@
 // outputs: per-check pass/fail lines; exits non-zero if any check fails
 //
 // usage:
-//   cd client && node --import ./tests/register-hooks.mjs tests/steps_precedence.test.mjs
+//   cd client && TZ=America/New_York node --import ./tests/register-hooks.mjs tests/steps_precedence.test.mjs
+
+// --- Timezone guard. The streak and weekly-average checks below walk logical
+//     days through host-local time, so under any other zone they prove less
+//     than they claim. Exit rather than warn: a green run must mean something. ---
+if (process.env.TZ !== 'America/New_York') {
+  console.error('FAIL this test must run under TZ=America/New_York (see tests/README.md)');
+  process.exit(1);
+}
 
 // --- Minimal localStorage shim (Node has none). Must exist before the stores
 //     are imported, so the imports below are dynamic rather than hoisted. ---

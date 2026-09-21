@@ -9,7 +9,16 @@ export default defineConfig(({ mode }) => {
   // It serves from capacitor://localhost/ root, so base is '/', and the
   // service worker is disabled: assets ship inside the app bundle, so a SW
   // would cache a second copy and shadow the bundle after a reinstall.
-  const native = mode === 'native'
+  //
+  // `npm run build:ios:dev` passes --mode nativedev for the side-by-side dev
+  // app (bundle id com.reihastings.glim.dev). Identical build shape; the only
+  // difference is which env file Vite reads, and therefore which Firebase
+  // project the bundle points at. Vite resolves .env.nativedev.local ahead of
+  // .env.local, so the dev app gets glim-dev and every other path keeps
+  // production. Both modes must answer true here or the dev app would ship
+  // with base '/Glim/' and a service worker, and would not boot in the
+  // WebView.
+  const native = mode === 'native' || mode === 'nativedev'
 
   return {
     base: native ? '/' : '/Glim/',

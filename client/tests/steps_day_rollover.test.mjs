@@ -32,6 +32,13 @@
 //   cd client
 //   TZ=America/New_York node --import ./tests/register-hooks.mjs tests/steps_day_rollover.test.mjs
 
+// --- Timezone guard (hard). Criterion 5 pins DST instants; under any other
+//     zone the walk cannot be checked, so fail up front rather than warn. ---
+if (process.env.TZ !== 'America/New_York') {
+  console.error('FAIL this test must run under TZ=America/New_York (see tests/README.md)');
+  process.exit(1);
+}
+
 // --- localStorage shim, before the stores are imported ---
 const mem = new Map();
 globalThis.localStorage = {
@@ -126,10 +133,7 @@ function resetStore() {
   steps().reload();
 }
 
-console.log(`\n=== Criterion 5: the day walk anchors on the LOGICAL day (TZ=${process.env.TZ ?? 'unset'}) ===`);
-if (process.env.TZ !== 'America/New_York') {
-  console.warn('  WARNING: not running under TZ=America/New_York; the DST instants prove nothing.');
-}
+console.log(`\n=== Criterion 5: the day walk anchors on the LOGICAL day (TZ=${process.env.TZ}) ===`);
 console.log(`  fixture: ${RUN_DAYS} consecutive imported days of ${PER_DAY} steps ` +
             `(tier 1 = ${TIERS[0]})\n`);
 

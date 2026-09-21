@@ -56,12 +56,12 @@ Everything runs client-side. The only server dependency is Firebase for authenti
 1. Clone the repository and install dependencies:
 
 ```bash
-git clone https://github.com/ReitheHeroine/Glim.git
+git clone https://github.com/ReiHastings/Glim.git
 cd Glim/client
 npm install
 ```
 
-2. Copy the environment template and fill in your Firebase credentials:
+2. Copy the environment template and fill in your production Firebase credentials:
 
 ```bash
 cp .env.example .env.local
@@ -79,6 +79,81 @@ VITE_FIREBASE_APP_ID=your-app-id
 ```
 
 3. Deploy the Firestore security rules in `firestore.rules` to your Firebase project. These restrict all reads and writes to the authenticated user's own document tree.
+
+#### Developing against a separate Firebase project
+
+Once the app is live, running the dev server against the production project means
+every local experiment writes real documents into a real user's tree, and any
+rules change needed by a work-in-progress branch has to be published to the
+project all live clients depend on. A second, free Firebase project avoids both.
+
+Create one (Firestore in production mode, database ID `(default)`, Google
+sign-in enabled, `firestore.rules` published to it), register a Web app, then
+put its six values in `client/.env.development.local` rather than in
+`.env.local`:
+
+```bash
+cp .env.example .env.development.local   # Then fill in the DEV project values
+```
+
+Vite resolves `.env.[mode].local` ahead of `.env.local`, so the split is
+automatic and requires no flags or file swapping:
+
+| Command | Vite mode | Reads |
+|---|---|---|
+| `npm run dev` | `development` | `.env.development.local` |
+| `npm run build` | `production` | `.env.local` |
+| `npm run build:ios` | `native` | `.env.local` |
+| GitHub Actions deploy | `production` | repository secrets |
+
+Both files match the `*.local` pattern in `client/.gitignore`, so neither is
+committed. Deleting or renaming `.env.development.local` reverts `npm run dev`
+to the production project, which is occasionally useful for reproducing a bug
+against real data.
+
+Two consequences worth knowing:
+
+- A different project issues a **different UID**, so the dev account starts
+  empty. That is the isolation working, not a sync failure.
+- Vite reads env files **once at startup**. A dev server already running when
+  you create the file keeps serving the old credentials until restarted.
+
+Security rules are per project and cannot be branched. When a rules change ships
+with a client change, publish a version permitting **both** the old and new
+client before merging, and tighten it only after the rollout has reached
+installed PWAs and native builds. The `hasOnly([...])` field validation in
+`firestore.rules` is the part most likely to reject an old client mid-rollout.
+
+#### Side-by-side iOS dev app
+
+The iOS app can be installed twice: `com.reihastings.glim` (production) and
+`com.reihastings.glim.dev`, pointed at the development Firebase project. They
+are separate iOS applications, so they have separate icons, storage containers
+and HealthKit authorisations, and work on a branch cannot disturb the app other
+people are running. The dev icon carries an amber corner wedge to tell them
+apart on the home screen.
+
+```bash
+cd client
+./scripts/ios-dev.sh -l     # list connected devices
+./scripts/ios-dev.sh        # build and install the dev app
+```
+
+Setup, once: register an iOS app in the development Firebase project with
+bundle ID `com.reihastings.glim.dev`, download its `GoogleService-Info.plist`
+and save it as `GoogleService-Info-dev.plist` beside the production one (both
+gitignored). The script's preflight refuses to build if it is missing, if its
+project ID matches production, or if its bundle ID is wrong.
+
+Everything that differs between the two builds is a command-line build-setting
+override passed to `xcodebuild`, so `project.pbxproj` is untouched and the
+production build path through the Xcode GUI is unchanged. The one tracked file
+the dev build needs is `Info.plist`, which registers both apps' Google sign-in
+URL schemes at once; iOS routes each to whichever app claims it.
+
+The script restores production state on exit, including re-running
+`npm run sync:ios`, because `cap sync` otherwise leaves development web assets
+in `ios/App/App/public` where an Xcode Archive would pick them up.
 
 ### Usage
 
@@ -180,4 +255,4 @@ React 19, Vite 8, Tailwind CSS 4 (`@tailwindcss/vite`), Zustand 5 (state managem
 
 ## Author
 
-Reina Hastings - [GitHub](https://github.com/ReitheHeroine)
+Reina Hastings - [GitHub](https://github.com/ReiHastings)
