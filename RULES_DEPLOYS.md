@@ -1,0 +1,12 @@
+# Firestore rules deploy log
+
+One line per deploy, appended by `scripts/deploy-rules.sh`. This file is the record of which
+version of `firestore.rules` is live in each Firebase project; commit it after every deploy.
+`scripts/deploy-rules.sh -s` reads it. The "rules blob" is `git hash-object firestore.rules`,
+which identifies the exact content deployed.
+
+Before 2026-09-21 rules were pasted into the Firebase console by hand. Both projects were
+confirmed to carry the repo's ruleset on 2026-09-19.
+
+| when (UTC) | alias | project | commit | rules blob |
+|---|---|---|---|---|
