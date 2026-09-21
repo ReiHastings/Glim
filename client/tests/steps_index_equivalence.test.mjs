@@ -227,10 +227,7 @@ const INSTANTS = [
   { label: 'DST fall back, 01:30',           ms: localInstant(2026, 11, 1,  1, 30), inWindow: true  },
 ];
 
-console.log(`\n=== Criterion 2: exact-output equivalence (TZ=${process.env.TZ ?? 'unset'}) ===`);
-if (process.env.TZ !== 'America/New_York') {
-  console.warn('  WARNING: not running under TZ=America/New_York; the DST instants prove nothing.');
-}
+console.log(`\n=== Criterion 2: exact-output equivalence (TZ=${process.env.TZ}) ===`);
 
 for (const inst of INSTANTS) {
   withClock(inst.ms, () => {

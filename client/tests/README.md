@@ -11,8 +11,8 @@ non-zero on failure. The absence of a broader suite is tracked in
 ### Everything at once
 
 ```bash
-npm test              # every test except the slow calibration run (about 20 s)
-npm run test:all      # everything, 33 runs from 30 files (about 3 min); what CI runs
+npm test              # every test except the slow calibration run (about 5 s)
+npm run test:all      # everything, 33 runs from 30 files (about 65 s locally, 80 s on CI); what CI runs
 node tests/run-all.mjs --only cycle    # a subset, by file-name substring
 node tests/run-all.mjs --self-test     # proves the runner's own checks fire
 ```
@@ -20,7 +20,7 @@ node tests/run-all.mjs --self-test     # proves the runner's own checks fire
 `tests/run-all.mjs` holds a manifest of runs: the `--import` hook and the `TZ`
 pin for each file, with `cycle_dates` listed under all four zones. Before any
 test executes, the runner checks that every `tests/*.test.mjs` has a row and
-that each file's header `usage:` line agrees with its rows, so a new test
+that each file's header `usage:` block agrees with its rows, so a new test
 cannot be silently skipped and the manifest cannot drift from the files. Every
 row carries an explicit zone (`America/New_York` when the file's own usage line
 names none), because on CI the host zone is UTC.

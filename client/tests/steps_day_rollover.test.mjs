@@ -133,10 +133,7 @@ function resetStore() {
   steps().reload();
 }
 
-console.log(`\n=== Criterion 5: the day walk anchors on the LOGICAL day (TZ=${process.env.TZ ?? 'unset'}) ===`);
-if (process.env.TZ !== 'America/New_York') {
-  console.warn('  WARNING: not running under TZ=America/New_York; the DST instants prove nothing.');
-}
+console.log(`\n=== Criterion 5: the day walk anchors on the LOGICAL day (TZ=${process.env.TZ}) ===`);
 console.log(`  fixture: ${RUN_DAYS} consecutive imported days of ${PER_DAY} steps ` +
             `(tier 1 = ${TIERS[0]})\n`);
 
