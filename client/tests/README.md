@@ -11,8 +11,8 @@ non-zero on failure. The absence of a broader suite is tracked in
 ### Everything at once
 
 ```bash
-npm test              # every test except the slow calibration run (about 5 s)
-npm run test:all      # everything, 33 runs from 30 files (about 65 s locally, 80 s on CI); what CI runs
+npm test              # everything except the two slow runs (about 10 s; includes the rules emulator test)
+npm run test:all      # everything, 35 runs from 32 files (about 90 s locally); what CI runs
 node tests/run-all.mjs --only cycle    # a subset, by file-name substring
 node tests/run-all.mjs --self-test     # proves the runner's own checks fire
 ```
@@ -24,6 +24,13 @@ that each file's header `usage:` block agrees with its rows, so a new test
 cannot be silently skipped and the manifest cannot drift from the files. Every
 row carries an explicit zone (`America/New_York` when the file's own usage line
 names none), because on CI the host zone is UTC.
+
+Two tests need the **Firestore emulator**, which needs **Java 21 or newer**
+(`brew install openjdk@21`; the runner finds Homebrew's copy even though it is
+not on the PATH). The runner wraps them in `firebase emulators:exec`, runs them
+one at a time after everything else, checks for Java and a free port 8080
+first, and stops the emulator gracefully on a timeout. If a run reports port
+8080 in use, an earlier emulator was orphaned: `lsof -i :8080`.
 
 ### One at a time
 
@@ -52,11 +59,26 @@ node --import ./tests/register-hooks.mjs tests/symptoms_store.test.mjs
 # newer remote copy, no push may lower a remote updatedAt, failed pushes retry)
 node --import ./tests/register-sync-mocks.mjs tests/symptoms_sync.test.mjs
 
-# Firestore rules structure: one rule per data path, mutable collections gated,
-# steps-health field validation present (STATIC only - there is no emulator, so
-# the rules are never evaluated here; the behavioral gate is the deploy plus the
-# manual device/console checks in the Phase 2 handoff spec)
+# Firestore rules STRUCTURE: one rule per data path, mutable collections gated,
+# steps-health field validation present. Static: it reads the file as text and
+# never evaluates a rule. It is the "did the file keep its shape" gate.
 node tests/firestore_rules.test.mjs
+
+# Firestore rules BEHAVIOUR (2026-09-21): loads firestore.rules into the
+# Firestore emulator and attempts 57 real reads and writes as alice, bob and an
+# unauthenticated user: ownership, list queries, updatedAt monotonicity and its
+# escape hatches, both field validators, the validator-times-monotonicity
+# composition the rules comments warn about, merge writes (production's only
+# write shape), and the catch-all. Three cases assert CURRENT behaviour that is
+# arguably a gap, so a later rules change flips them visibly. Needs Java 21+.
+npx --yes firebase-tools@15.30.2 emulators:exec --only firestore --project demo-glim "node tests/firestore_rules_emulator.test.mjs"
+
+# Proof that the test above has teeth: applies 16 deliberate mutations to a temp
+# copy of the rules (each an exact before/after edit that must match once) and
+# asserts the right cases go red, plus one equivalence check (hasAll in
+# cycleValid is redundant; removing it must turn nothing red). Slow row: runs
+# under `npm run test:all` and CI, not `npm test`.
+npx --yes firebase-tools@15.30.2 emulators:exec --only firestore --project demo-glim "node tests/firestore_rules_mutations.test.mjs"
 
 # Health step import, the adapter seam: the null adapter's contract, and the
 # invariant that only pluginAdapter.js imports @capgo/capacitor-health and only
@@ -207,6 +229,8 @@ node tests/perf/characterise.mjs
   device that already holds the entry, which `syncJournal` never did before the
   water pull branch was ported on 2026-09-08; and (Y16) a clear-day mark that
   has not yet synced loses to the tombstone the log laid on the other device.
+- `firestore_rules_emulator.test.mjs` - behavioural test: 57 cases against the Firestore emulator. Reads the rules from `GLIM_RULES_FILE` when set (the mutation test's seam), otherwise the repo file, resolved against the test file and never the cwd. Prints `ok <nn>` / `FAIL <nn>` per case; exits 3 if the rules fail to load.
+- `firestore_rules_mutations.test.mjs` - mutation harness for the test above. When `firestore.rules` is edited so that a mutation's 'before' text no longer matches exactly once, this fails and names the mutation to update.
 - `firestore_rules.test.mjs` - static-structure test for `firestore.rules`.
   Locks the property that made the first draft of the monotonicity backstop a
   no-op: Firestore grants a request if ANY matching allow is true, so a
