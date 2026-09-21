@@ -32,6 +32,13 @@
 //   cd client
 //   TZ=America/New_York node --import ./tests/register-hooks.mjs tests/steps_day_rollover.test.mjs
 
+// --- Timezone guard (hard). Criterion 5 pins DST instants; under any other
+//     zone the walk cannot be checked, so fail up front rather than warn. ---
+if (process.env.TZ !== 'America/New_York') {
+  console.error('FAIL this test must run under TZ=America/New_York (see tests/README.md)');
+  process.exit(1);
+}
+
 // --- localStorage shim, before the stores are imported ---
 const mem = new Map();
 globalThis.localStorage = {
