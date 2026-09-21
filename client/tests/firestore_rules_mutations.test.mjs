@@ -5,7 +5,7 @@
 // created: 2026-09-21
 //
 // purpose:
-//   Proves firestore_rules_emulator.test.mjs has teeth. For each mutation below
+//   Proves firestore_rules_emulator.test.mjs has teeth (18 mutations, 1 equivalence). For each mutation below
 //   it writes a deliberately broken copy of firestore.rules to a temp file,
 //   runs the emulator test against it, and asserts that the cases the mutation
 //   should break DO go red. A rules test that stays green when the rule it
@@ -63,11 +63,15 @@ const MUTATIONS = [
   { id: 'M3', what: 'repair path for a corrupt existing stamp removed',
     before: "\n          || !isIsoStamp(resource.data.updatedAt)", after: '', mustRed: [21] },
   { id: 'M4', what: 'create escape (resource == null) removed',
-    before: 'return resource == null', after: 'return false', mustRed: [27, 28, 29, 43, 44] },
+    before: '&& (resource == null', after: '&& (false', mustRed: [27, 28, 29, 43, 44] },
   { id: 'M5', what: 'request-without-updatedAt escape removed',
     before: "\n          || !('updatedAt' in request.resource.data)", after: '', mustRed: [24] },
   { id: 'M6', what: 'steps-health validator removed from the gate',
-    before: GATE_STEPS, after: '', mustRed: [30, 31, 32, 33, 34, 35, 36, 38] },
+    // Not 36 (malformed updatedAt): since 2026-09-21 incomingStampWellFormed()
+    // refuses that write by itself, so two clauses cover it and removing the
+    // validator alone no longer reddens it. M18 is the mutation that proves
+    // the stamp clause.
+    before: GATE_STEPS, after: '', mustRed: [30, 31, 32, 33, 34, 35, 38] },
   { id: 'M7', what: '`is int` relaxed to `is number`',
     before: 'd.steps is int && d.steps >= 0', after: 'd.steps is number && d.steps >= 0', mustRed: [30] },
   { id: 'M8', what: 'steps >= 0 removed',
@@ -88,6 +92,10 @@ const MUTATIONS = [
     before: 'return request.auth != null && request.auth.uid == userId;', after: 'return request.auth != null;', mustRed: [2, 6, 8, 10, 16, 53] },
   { id: 'M16', what: 'delete opened to everyone',
     before: 'allow delete: if isOwner(userId);', after: 'allow delete: if true;', mustRed: [16, 56] },
+  { id: 'M17', what: 'cycle id == docId removed (one row per day no longer bound to the document path)',
+    before: "\n          && d.id == docId", after: '', mustRed: [54] },
+  { id: 'M18', what: 'incoming-stamp well-formedness removed',
+    before: 'return incomingStampWellFormed()\n          && (resource == null', after: 'return (resource == null', mustRed: [23, 58] },
   { id: 'E1', what: 'EQUIVALENCE: cycle hasAll removed (believed redundant; must turn nothing red)',
     before: "\n          && d.keys().hasAll(['id', 'date', 'flow', 'createdAt', 'updatedAt'])", after: '', mustRed: [], mustBeGreen: true },
 ];

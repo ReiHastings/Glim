@@ -11,8 +11,14 @@
 //   the file kept its shape; this one checks the rules do what they say.
 //   Spec and the case table: docs/plan_stage1_rules.md Section 3.3.
 //
-//   Three cases (23, 42, 54) assert CURRENT behaviour that is arguably a gap,
-//   so that a later rules change flips them visibly rather than silently.
+//   Case 42 asserts CURRENT behaviour that is arguably a gap (a legacy invalid
+//   row can never receive the syncedAt backfill), so that a later rules change
+//   flips it visibly. Cases 23 and 54 pinned two other gaps until 2026-09-21,
+//   when the rules closed them; they now assert the closed behaviour.
+//
+//   Cycle cases write at the document path equal to the row's id, because the
+//   rules now require it; isolation comes from clearFirestore() before every
+//   case, not from distinct paths.
 //
 // inputs:
 //   FIRESTORE_EMULATOR_HOST  set by `firebase emulators:exec`; required
@@ -22,7 +28,7 @@
 //   GLIM_SHUFFLE             optional; any value runs the cases in random order
 // outputs:
 //   one line per check: `ok <nn> <name>` or `FAIL <nn> <name>` (the mutation
-//   test parses these); exit 0 iff all 57 ran and passed; exit 3 if the rules
+//   test parses these); exit 0 iff all 58 ran and passed; exit 3 if the rules
 //   file failed to load (so a mutation that breaks compilation is
 //   distinguishable from one that turns cases red)
 //
@@ -54,7 +60,7 @@ const {
 
 // --- Constants ---------------------------------------------------------------
 
-const EXPECTED_CHECKS = 57;
+const EXPECTED_CHECKS = 58;
 const PROJECT_ID = 'demo-glim';   // must match --project; demo- never reaches a real project
 const RULES_FILE = process.env.GLIM_RULES_FILE
   ? path.resolve(process.env.GLIM_RULES_FILE)
@@ -123,7 +129,7 @@ const cases = [
   { n: 20, name: 'existing row with no updatedAt can be updated', expect: 'allow', seed: () => seed(A('symptoms', 'c20'), { a: 1 }), op: () => setDoc(doc(alice, A('symptoms', 'c20')), { updatedAt: T }) },
   { n: 21, name: 'existing row with a garbage updatedAt can be repaired', expect: 'allow', seed: () => seed(A('symptoms', 'c21'), { updatedAt: 'garbage' }), op: () => setDoc(doc(alice, A('symptoms', 'c21')), { updatedAt: T }) },
   { n: 22, name: "malformed incoming stamp that sorts below T ('2026-09-21') is refused", expect: 'deny', seed: () => seed(A('symptoms', 'c22'), { updatedAt: T }), op: () => setDoc(doc(alice, A('symptoms', 'c22')), { updatedAt: '2026-09-21' }) },
-  { n: 23, name: 'GAP: malformed incoming stamp that sorts above T is accepted', expect: 'allow', seed: () => seed(A('symptoms', 'c23'), { updatedAt: T }), op: () => setDoc(doc(alice, A('symptoms', 'c23')), { updatedAt: T + ' junk' }) },
+  { n: 23, name: 'malformed incoming stamp that sorts ABOVE T is refused (gap closed 2026-09-21)', expect: 'deny', seed: () => seed(A('symptoms', 'c23'), { updatedAt: T }), op: () => setDoc(doc(alice, A('symptoms', 'c23')), { updatedAt: T + ' junk' }) },
   { n: 24, name: 'update carrying no updatedAt is allowed', expect: 'allow', seed: () => seed(A('symptoms', 'c24'), { updatedAt: T }), op: () => setDoc(doc(alice, A('symptoms', 'c24')), { a: 1 }) },
   { n: 25, name: 'write-once collection (water) is not gated on updatedAt', expect: 'allow', seed: () => seed(A('water', 'c25'), { updatedAt: T }), op: () => setDoc(doc(alice, A('water', 'c25')), { updatedAt: T_MINUS }) },
   { n: 26, name: 'delete in a mutable collection is not gated', expect: 'allow', seed: () => seed(A('symptoms', 'c26'), { updatedAt: T }), op: () => deleteDoc(doc(alice, A('symptoms', 'c26'))) },
@@ -143,29 +149,30 @@ const cases = [
   // Composition: validators and monotonicity apply TOGETHER
   { n: 37, name: 'composition: field-valid but stale steps-health write refused', expect: 'deny', seed: () => seed(A('steps-health', 'c37'), { ...STEPS }), op: () => setDoc(doc(alice, A('steps-health', 'c37')), { ...STEPS, updatedAt: T_MINUS }) },
   { n: 38, name: 'composition: newer but field-invalid steps-health write refused', expect: 'deny', seed: () => seed(A('steps-health', 'c38'), { ...STEPS }), op: () => setDoc(doc(alice, A('steps-health', 'c38')), { ...STEPS, updatedAt: T_PLUS, mood: 'x' }) },
-  { n: 39, name: 'composition: field-valid but stale cycle write refused', expect: 'deny', seed: () => seed(A('cycle', 'c39'), { ...CYCLE }), op: () => setDoc(doc(alice, A('cycle', 'c39')), { ...CYCLE, updatedAt: T_MINUS }) },
-  { n: 40, name: 'composition: newer but field-invalid cycle write refused', expect: 'deny', seed: () => seed(A('cycle', 'c40'), { ...CYCLE }), op: () => setDoc(doc(alice, A('cycle', 'c40')), { ...CYCLE, updatedAt: T_PLUS, flow: 'flood' }) },
-  { n: 41, name: 'merge write of syncedAt only onto a valid cycle row (the backfill shape)', expect: 'allow', seed: () => seed(A('cycle', 'c41'), { ...CYCLE }), op: () => setDoc(doc(alice, A('cycle', 'c41')), { syncedAt: serverTimestamp() }, { merge: true }) },
-  { n: 42, name: 'BEHAVIOUR: the same backfill onto a field-invalid legacy row is refused', expect: 'deny', seed: () => seed(A('cycle', 'c42'), { ...CYCLE, id: 'x' }), op: () => setDoc(doc(alice, A('cycle', 'c42')), { syncedAt: serverTimestamp() }, { merge: true }) },
+  { n: 39, name: 'composition: field-valid but stale cycle write refused', expect: 'deny', seed: () => seed(A('cycle', CYCLE.id), { ...CYCLE }), op: () => setDoc(doc(alice, A('cycle', CYCLE.id)), { ...CYCLE, updatedAt: T_MINUS }) },
+  { n: 40, name: 'composition: newer but field-invalid cycle write refused', expect: 'deny', seed: () => seed(A('cycle', CYCLE.id), { ...CYCLE }), op: () => setDoc(doc(alice, A('cycle', CYCLE.id)), { ...CYCLE, updatedAt: T_PLUS, flow: 'flood' }) },
+  { n: 41, name: 'merge write of syncedAt only onto a valid cycle row (the backfill shape)', expect: 'allow', seed: () => seed(A('cycle', CYCLE.id), { ...CYCLE }), op: () => setDoc(doc(alice, A('cycle', CYCLE.id)), { syncedAt: serverTimestamp() }, { merge: true }) },
+  { n: 42, name: 'BEHAVIOUR: the same backfill onto a field-invalid legacy row is refused', expect: 'deny', seed: () => seed(A('cycle', CYCLE.id), { ...CYCLE, id: 'x' }), op: () => setDoc(doc(alice, A('cycle', CYCLE.id)), { syncedAt: serverTimestamp() }, { merge: true }) },
 
   // cycle validator
-  { n: 43, name: 'cycle: minimal valid row', expect: 'allow', op: () => setDoc(doc(alice, A('cycle', 'c43')), { ...CYCLE }) },
-  { n: 44, name: 'cycle: optional fields accepted', expect: 'allow', op: () => setDoc(doc(alice, A('cycle', 'c44')), { ...CYCLE, note: null, isPeriodStart: true, deletedAt: null }) },
-  { n: 45, name: 'cycle: id differing from date refused', expect: 'deny', op: () => setDoc(doc(alice, A('cycle', 'c45')), { ...CYCLE, id: 'x' }) },
-  { n: 46, name: 'cycle: malformed date refused (id == date, so only the regex decides)', expect: 'deny', op: () => setDoc(doc(alice, A('cycle', 'c46')), { ...CYCLE, id: '2026-9-1', date: '2026-9-1' }) },
-  { n: 47, name: 'cycle: unknown flow refused', expect: 'deny', op: () => setDoc(doc(alice, A('cycle', 'c47')), { ...CYCLE, flow: 'flood' }) },
-  { n: 48, name: 'cycle: missing createdAt refused', expect: 'deny', op: () => { const { createdAt: _c, ...rest } = CYCLE; return setDoc(doc(alice, A('cycle', 'c48')), rest); } },
-  { n: 49, name: 'cycle: extra field refused', expect: 'deny', op: () => setDoc(doc(alice, A('cycle', 'c49')), { ...CYCLE, mood: 'x' }) },
-  { n: 50, name: 'cycle: 501-character note refused', expect: 'deny', op: () => setDoc(doc(alice, A('cycle', 'c50')), { ...CYCLE, note: 'n'.repeat(501) }) },
-  { n: 51, name: 'cycle: non-boolean isPeriodStart refused', expect: 'deny', op: () => setDoc(doc(alice, A('cycle', 'c51')), { ...CYCLE, isPeriodStart: 'yes' }) },
-  { n: 52, name: 'cycle: malformed createdAt refused', expect: 'deny', op: () => setDoc(doc(alice, A('cycle', 'c52')), { ...CYCLE, createdAt: 'garbage' }) },
-  { n: 53, name: 'cycle: bob cannot write a valid row under alice', expect: 'deny', op: () => setDoc(doc(bob, A('cycle', 'c53')), { ...CYCLE }) },
-  { n: 54, name: 'GAP: a valid row is accepted at a document path that differs from its id field', expect: 'allow', op: () => setDoc(doc(alice, A('cycle', 'zzz')), { ...CYCLE }) },
+  { n: 43, name: 'cycle: minimal valid row', expect: 'allow', op: () => setDoc(doc(alice, A('cycle', CYCLE.id)), { ...CYCLE }) },
+  { n: 44, name: 'cycle: optional fields accepted', expect: 'allow', op: () => setDoc(doc(alice, A('cycle', CYCLE.id)), { ...CYCLE, note: null, isPeriodStart: true, deletedAt: null }) },
+  { n: 45, name: 'cycle: id differing from date refused (written at path x, so only id == date decides)', expect: 'deny', op: () => setDoc(doc(alice, A('cycle', 'x')), { ...CYCLE, id: 'x' }) },
+  { n: 46, name: 'cycle: malformed date refused (id == date == path, so only the regex decides)', expect: 'deny', op: () => setDoc(doc(alice, A('cycle', '2026-9-1')), { ...CYCLE, id: '2026-9-1', date: '2026-9-1' }) },
+  { n: 47, name: 'cycle: unknown flow refused', expect: 'deny', op: () => setDoc(doc(alice, A('cycle', CYCLE.id)), { ...CYCLE, flow: 'flood' }) },
+  { n: 48, name: 'cycle: missing createdAt refused', expect: 'deny', op: () => { const { createdAt: _c, ...rest } = CYCLE; return setDoc(doc(alice, A('cycle', CYCLE.id)), rest); } },
+  { n: 49, name: 'cycle: extra field refused', expect: 'deny', op: () => setDoc(doc(alice, A('cycle', CYCLE.id)), { ...CYCLE, mood: 'x' }) },
+  { n: 50, name: 'cycle: 501-character note refused', expect: 'deny', op: () => setDoc(doc(alice, A('cycle', CYCLE.id)), { ...CYCLE, note: 'n'.repeat(501) }) },
+  { n: 51, name: 'cycle: non-boolean isPeriodStart refused', expect: 'deny', op: () => setDoc(doc(alice, A('cycle', CYCLE.id)), { ...CYCLE, isPeriodStart: 'yes' }) },
+  { n: 52, name: 'cycle: malformed createdAt refused', expect: 'deny', op: () => setDoc(doc(alice, A('cycle', CYCLE.id)), { ...CYCLE, createdAt: 'garbage' }) },
+  { n: 53, name: 'cycle: bob cannot write a valid row under alice', expect: 'deny', op: () => setDoc(doc(bob, A('cycle', CYCLE.id)), { ...CYCLE }) },
+  { n: 54, name: 'cycle: a valid row at a document path that differs from its id field is refused (gap closed 2026-09-21)', expect: 'deny', op: () => setDoc(doc(alice, A('cycle', 'zzz')), { ...CYCLE }) },
 
   // Auth edges
   { n: 55, name: "anon lists alice's symptoms", expect: 'deny', op: () => getDocs(collection(anon, 'users/alice/symptoms')) },
   { n: 56, name: "anon deletes alice's entry", expect: 'deny', seed: () => seed(A('water', 'c56'), { a: 1 }), op: () => deleteDoc(doc(anon, A('water', 'c56'))) },
   { n: 57, name: 'alice creates her user document', expect: 'allow', op: () => setDoc(doc(alice, 'users/alice'), { createdAt: T }) },
+  { n: 58, name: 'a CREATE carrying a malformed updatedAt is refused in a mutable collection', expect: 'deny', op: () => setDoc(doc(alice, A('symptoms', 'c58')), { updatedAt: 'garbage' }) },
 ];
 
 // --- Run ---------------------------------------------------------------------

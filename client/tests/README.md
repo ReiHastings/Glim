@@ -65,15 +65,16 @@ node --import ./tests/register-sync-mocks.mjs tests/symptoms_sync.test.mjs
 node tests/firestore_rules.test.mjs
 
 # Firestore rules BEHAVIOUR (2026-09-21): loads firestore.rules into the
-# Firestore emulator and attempts 57 real reads and writes as alice, bob and an
+# Firestore emulator and attempts 58 real reads and writes as alice, bob and an
 # unauthenticated user: ownership, list queries, updatedAt monotonicity and its
 # escape hatches, both field validators, the validator-times-monotonicity
 # composition the rules comments warn about, merge writes (production's only
-# write shape), and the catch-all. Three cases assert CURRENT behaviour that is
-# arguably a gap, so a later rules change flips them visibly. Needs Java 21+.
+# write shape), and the catch-all. Case 42 asserts CURRENT behaviour that is
+# arguably a gap, so a later rules change flips it visibly. Cycle cases write at
+# the document path equal to the row's id, which the rules require. Needs Java 21+.
 npx --yes firebase-tools@15.30.2 emulators:exec --only firestore --project demo-glim "node tests/firestore_rules_emulator.test.mjs"
 
-# Proof that the test above has teeth: applies 16 deliberate mutations to a temp
+# Proof that the test above has teeth: applies 18 deliberate mutations to a temp
 # copy of the rules (each an exact before/after edit that must match once) and
 # asserts the right cases go red, plus one equivalence check (hasAll in
 # cycleValid is redundant; removing it must turn nothing red). Slow row: runs
@@ -229,7 +230,7 @@ node tests/perf/characterise.mjs
   device that already holds the entry, which `syncJournal` never did before the
   water pull branch was ported on 2026-09-08; and (Y16) a clear-day mark that
   has not yet synced loses to the tombstone the log laid on the other device.
-- `firestore_rules_emulator.test.mjs` - behavioural test: 57 cases against the Firestore emulator. Reads the rules from `GLIM_RULES_FILE` when set (the mutation test's seam), otherwise the repo file, resolved against the test file and never the cwd. Prints `ok <nn>` / `FAIL <nn>` per case; exits 3 if the rules fail to load.
+- `firestore_rules_emulator.test.mjs` - behavioural test: 58 cases against the Firestore emulator. Reads the rules from `GLIM_RULES_FILE` when set (the mutation test's seam), otherwise the repo file, resolved against the test file and never the cwd. Prints `ok <nn>` / `FAIL <nn>` per case; exits 3 if the rules fail to load.
 - `firestore_rules_mutations.test.mjs` - mutation harness for the test above. When `firestore.rules` is edited so that a mutation's 'before' text no longer matches exactly once, this fails and names the mutation to update.
 - `firestore_rules.test.mjs` - static-structure test for `firestore.rules`.
   Locks the property that made the first draft of the monotonicity backstop a

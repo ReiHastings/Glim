@@ -1,6 +1,8 @@
-# Glim - An Interactive Wellness Companion PWA
+# Glim - An Interactive Wellness Companion
 
-A personal pet project. An animated owl-moth creature lives in your browser tab, delivering context-aware encouragement while tracking water intake, steps, nutrition, and journal entries. Built as a progressive web app with offline support and cross-device sync via Firebase.
+A personal pet project. An animated owl-moth creature keeps you company, delivering context-aware encouragement while tracking water intake, steps, nutrition, and journal entries. One React codebase with offline support and cross-device sync via Firebase, shipped as a native iOS app built with Capacitor and distributed through TestFlight.
+
+> **Distribution note (2026-09-19, revised 2026-09-21).** The **native iOS app is the official version**, distributed through TestFlight. Glim began as a progressive web app. The web build still exists (`npm run dev` and `npm run build` work, and the service-worker tooling remains in the codebase), but the PWA is retired: nothing deploys it any more, and a merge to `main` ships nothing. References to the PWA below describe that web build; they are not the distribution path.
 
 The creature responds to pointer interactions (click, drag, shake, long-press) with procedural animations and draws from 700+ hand-written messages organized across 29 context pools. Data persists in localStorage for instant reads and syncs to Firestore in the background, so the app works offline and stays consistent across devices.
 
@@ -42,7 +44,7 @@ User Interaction
                                                   +-------------------+
 ```
 
-Everything runs client-side. The only server dependency is Firebase for authentication (Google sign-in) and cloud storage. Sync runs automatically on app load, every 60 seconds, and on tab focus. GitHub Actions handles CI/CD: pushes to `main` trigger a build that injects Firebase credentials from repository secrets and deploys to GitHub Pages.
+Everything runs client-side. The only server dependency is Firebase for authentication (Google sign-in) and cloud storage. Sync runs automatically on app load, every 60 seconds, and on tab focus. GitHub Actions handles CI: every pull request and every push to `main` is linted, run through the full test matrix (including the Firestore rules against the emulator) and built. CI holds no secrets and deploys nothing; releases are archived from Xcode and uploaded to TestFlight.
 
 ## Getting Started
 
@@ -78,7 +80,15 @@ VITE_FIREBASE_MESSAGING_SENDER_ID=your-sender-id
 VITE_FIREBASE_APP_ID=your-app-id
 ```
 
-3. Deploy the Firestore security rules in `firestore.rules` to your Firebase project. These restrict all reads and writes to the authenticated user's own document tree.
+3. Deploy the Firestore security rules in `firestore.rules` to your Firebase project. These restrict all reads and writes to the authenticated user's own document tree, stop a stale write from overwriting a newer one, and validate the shape of the most sensitive collections. With the Firebase CLI logged in and your project IDs in `.firebaserc` (aliases `dev` and `prod`):
+
+```bash
+scripts/deploy-rules.sh -e dev -n   # dry run: compiles the rules against the project, deploys nothing
+scripts/deploy-rules.sh -e both     # tests, deploy dev, pause, typed confirmation, deploy prod
+scripts/deploy-rules.sh -s          # which commit's rules each project last received
+```
+
+A deploy replaces the live ruleset, so edit the file, never the console. Each deploy is recorded in `RULES_DEPLOYS.md`.
 
 #### Developing against a separate Firebase project
 
@@ -121,8 +131,11 @@ Two consequences worth knowing:
 Security rules are per project and cannot be branched. When a rules change ships
 with a client change, publish a version permitting **both** the old and new
 client before merging, and tighten it only after the rollout has reached
-installed PWAs and native builds. The `hasOnly([...])` field validation in
-`firestore.rules` is the part most likely to reject an old client mid-rollout.
+installed builds. This matters more with TestFlight than it did with GitHub
+Pages: a merge to `main` reaches nobody until a new build is uploaded and
+installed, so old and new clients coexist for weeks rather than minutes. The
+`hasOnly([...])` field validation in `firestore.rules` is the part most likely
+to reject an old client mid-rollout.
 
 #### Side-by-side iOS dev app
 
@@ -168,16 +181,26 @@ npm run build
 # Output in client/dist/
 ```
 
-### Deployment
+### Tests
 
-The included GitHub Actions workflow (`.github/workflows/deploy.yml`) deploys automatically on push to `main`. It expects the six `VITE_FIREBASE_*` values as repository secrets.
+```bash
+cd client
+npm test              # everything except the two slow runs, about 7 s
+npm run test:all      # all 35 runs, about 50 s; what CI runs
+```
+
+The tests are standalone Node scripts driven by `tests/run-all.mjs`, which holds the `--import` hook and timezone pin each one needs and refuses to run if a test file has no manifest row or its header usage line disagrees with the row. Two tests evaluate `firestore.rules` against the Firestore emulator, which needs Java 21 or newer (`brew install openjdk@21`). See `client/tests/README.md`.
+
+### Continuous integration and release
+
+`.github/workflows/ci.yml` runs lint, the full test matrix and the native web build on every pull request and every push to `main`. It needs no secrets and deploys nothing. A release is an Xcode archive of the iOS app uploaded to TestFlight; Firestore rules are released separately with `scripts/deploy-rules.sh`.
 
 ## Project Structure
 
 ```
 glim/
 ├── .github/workflows/
-│   └── deploy.yml                  # CI/CD: build + deploy to GitHub Pages
+│   └── ci.yml                      # CI: lint, full test matrix (incl. rules emulator), native build
 ├── client/
 │   ├── public/                     # PWA icons, favicon, service worker assets
 │   ├── src/
@@ -223,7 +246,12 @@ glim/
 │   ├── index.html                  # PWA manifest metadata, iOS meta tags
 │   ├── package.json                # React 19, Zustand 5, Firebase, Vite 8
 │   └── vite.config.js              # React + Tailwind + PWA plugin config
-├── firestore.rules                 # Per-user read/write security rules
+├── firestore.rules                 # Security rules: ownership, updatedAt monotonicity, field validation
+├── firebase.json                   # Firebase CLI config: rules file, emulator port
+├── .firebaserc                     # Project aliases: dev (also default), prod
+├── scripts/
+│   └── deploy-rules.sh             # The only way rules reach a project (never the console)
+├── RULES_DEPLOYS.md                # Log of every rules deploy, appended by the script
 ├── archive/                        # Pre-Vite single-file prototypes (reference only)
 │   ├── glim.html                   # Original single-file React build
 │   ├── tater.html                  # Sibling prototype, separate app
