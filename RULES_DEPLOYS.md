@@ -12,3 +12,5 @@ confirmed to carry the repo's ruleset on 2026-09-19.
 |---|---|---|---|---|
 | 2026-09-21T18:47:01Z | dev | glim-dev | 0da2c39 | c2d970a34e0c7e3448a4a052ff1b6c9354ba7554 |
 | 2026-09-21T18:47:13Z | prod | glim-da8c2 | 0da2c39 | c2d970a34e0c7e3448a4a052ff1b6c9354ba7554 |
+| 2026-09-21T19:16:06Z | dev | glim-dev | 8443241 | 96bacce301b759ba3425b8d385c6b5de097f273a |
+| 2026-09-21T19:16:28Z | prod | glim-da8c2 | 8443241 | 96bacce301b759ba3425b8d385c6b5de097f273a |
