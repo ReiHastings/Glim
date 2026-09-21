@@ -35,9 +35,12 @@ import path from 'node:path';
 
 // --- Guards ------------------------------------------------------------------
 
+// The port has one source, firebase.json, which the runner reads too.
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const PORT = JSON.parse(readFileSync(path.resolve(HERE, '../../firebase.json'), 'utf8'))?.emulators?.firestore?.port;
 const HOST = process.env.FIRESTORE_EMULATOR_HOST;
-if (!HOST || !/^(127\.0\.0\.1|localhost|\[::1\]):8080$/.test(HOST)) {
-  console.error(`FAIL this test must run inside \`firebase emulators:exec\` (FIRESTORE_EMULATOR_HOST=${HOST ?? 'unset'}; expected localhost:8080). See the usage line in this file's header.`);
+if (!Number.isInteger(PORT) || !HOST || !new RegExp(`^(127\\.0\\.0\\.1|localhost|\\[::1\\]):${PORT}$`).test(HOST)) {
+  console.error(`FAIL this test must run inside \`firebase emulators:exec\` (FIRESTORE_EMULATOR_HOST=${HOST ?? 'unset'}; expected localhost:${PORT}). See the usage line in this file's header.`);
   process.exit(1);
 }
 
@@ -53,7 +56,6 @@ const {
 
 const EXPECTED_CHECKS = 57;
 const PROJECT_ID = 'demo-glim';   // must match --project; demo- never reaches a real project
-const HERE = path.dirname(fileURLToPath(import.meta.url));
 const RULES_FILE = process.env.GLIM_RULES_FILE
   ? path.resolve(process.env.GLIM_RULES_FILE)
   : path.resolve(HERE, '../../firestore.rules');
@@ -183,8 +185,12 @@ for (const c of cases) {
     if (c.seed) await c.seed();
     await (c.expect === 'allow' ? assertSucceeds(c.op()) : assertFails(c.op()));
     passed++; console.log(`ok ${tag}`);
-  } catch {
-    failed++; console.log(`FAIL ${tag} (expected ${c.expect})`);
+  } catch (err) {
+    // The reason goes AFTER the tag so the mutation harness's `^FAIL <nn> `
+    // parse is unaffected. It separates "the rules allowed it" from "denied"
+    // from "the emulator was unreachable".
+    const why = String(err?.message ?? err).split('\n')[0].slice(0, 160);
+    failed++; console.log(`FAIL ${tag} (expected ${c.expect}; ${why})`);
   }
   executed++;
 }

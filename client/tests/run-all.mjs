@@ -37,7 +37,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import net from 'node:net';
-import { realpathSync, existsSync } from 'node:fs';
+import { realpathSync, existsSync, readFileSync } from 'node:fs';
 import { readdir, readFile, mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -59,7 +59,15 @@ const DRAIN_GRACE_MS = 1_000;
 const KILL_GRACE_MS = 5_000;          // SIGTERM, then SIGKILL this much later
 const FIREBASE_TOOLS = 'firebase-tools@15.30.2';
 const EMULATOR_PROJECT = 'demo-glim';   // demo- ids never reach a real project
-const EMULATOR_PORT = 8080;
+// The emulator port has ONE source: firebase.json. The rules test reads the
+// same file for its host guard, so the three cannot drift apart.
+function emulatorPort() {
+  const cfg = JSON.parse(readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../firebase.json'), 'utf8'));
+  const port = cfg?.emulators?.firestore?.port;
+  if (!Number.isInteger(port)) throw new Error('firebase.json has no integer emulators.firestore.port');
+  return port;
+}
+const EMULATOR_PORT = emulatorPort();
 const MIN_JAVA = 21;                    // firebase-tools 15 dropped older Java
 const CLIENT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -244,14 +252,30 @@ const liveGroups = new Set();
 function killGroup(pid, signal) {
   try { process.kill(-pid, signal); } catch { /* already gone */ }
 }
+// Set by the first SIGINT/SIGTERM. Once set, no new row starts and any row
+// that settles afterwards is ABORTED, never PASS: an emulator that shuts down
+// cleanly on SIGTERM exits 0, and an interrupted run must not read as green.
+let aborted = false;
+export const isAborted = () => aborted;
+const SIGNAL_EXIT = { SIGINT: 130, SIGTERM: 143 };
 let signalHandlersInstalled = false;
 function installSignalForwarding() {
   if (signalHandlersInstalled) return;
   signalHandlersInstalled = true;
   for (const sig of ['SIGINT', 'SIGTERM']) {
     process.on(sig, () => {
+      if (aborted) return;
+      aborted = true;
       for (const pid of liveGroups) killGroup(pid, 'SIGTERM');
-      setTimeout(() => { for (const pid of liveGroups) killGroup(pid, 'SIGKILL'); process.exit(130); }, liveGroups.size ? 3_000 : 0);
+      // Leave as soon as the groups are gone; force the issue after 3 s.
+      const started = Date.now();
+      const tick = setInterval(() => {
+        if (liveGroups.size === 0 || Date.now() - started > 3_000) {
+          clearInterval(tick);
+          for (const pid of liveGroups) killGroup(pid, 'SIGKILL');
+          process.exit(SIGNAL_EXIT[sig]);
+        }
+      }, 100);
     });
   }
 }
@@ -275,17 +299,18 @@ export function runRow(r, { root, timeoutMs, drainGraceMs = DRAIN_GRACE_MS, kill
     if (extraPath) env.PATH = `${extraPath}${path.delimiter}${env.PATH ?? ''}`;
     const child = spawn(cmd, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'], detached: r.group });
     if (r.group && child.pid) { installSignalForwarding(); liveGroups.add(child.pid); }
-    let exited = false, timedOut = false, settled = false, grace = null, killTimer = null;
+    let exited = false, timedOut = false, settled = false, grace = null, killTimer = null, forceTimer = null;
     const settle = (code, signal, extra = '') => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       if (grace) clearTimeout(grace);
       if (killTimer) clearTimeout(killTimer);
+      if (forceTimer) clearTimeout(forceTimer);
       if (child.pid) liveGroups.delete(child.pid);
       child.stdout.destroy();
       child.stderr.destroy();
-      const status = timedOut ? 'TIMEOUT' : code === 0 ? 'PASS' : 'FAIL';
+      const status = aborted ? 'ABORTED' : timedOut ? 'TIMEOUT' : code === 0 ? 'PASS' : 'FAIL';
       resolve({ row: r, status, code, signal, ms: Date.now() - started, output: Buffer.concat(chunks).toString('utf8') + extra });
     };
     const timer = setTimeout(() => {
@@ -293,7 +318,12 @@ export function runRow(r, { root, timeoutMs, drainGraceMs = DRAIN_GRACE_MS, kill
       timedOut = true;
       if (r.group) {
         killGroup(child.pid, 'SIGTERM');
-        killTimer = setTimeout(() => killGroup(child.pid, 'SIGKILL'), killGraceMs);
+        killTimer = setTimeout(() => {
+          killGroup(child.pid, 'SIGKILL');
+          // Backstop: a leader that survives SIGKILL (uninterruptible sleep)
+          // must not leave this promise unresolved and the runner hung.
+          forceTimer = setTimeout(() => settle(null, 'SIGKILL', '\n[runner] process did not exit after SIGKILL; abandoned\n'), killGraceMs);
+        }, killGraceMs);
       } else {
         child.kill('SIGKILL');
       }
@@ -302,6 +332,7 @@ export function runRow(r, { root, timeoutMs, drainGraceMs = DRAIN_GRACE_MS, kill
     child.stderr.on('data', (c) => chunks.push(c));
     child.on('exit', (code, signal) => {
       exited = true;
+      if (child.pid) liveGroups.delete(child.pid);   // the pid may be reused from here on
       grace = setTimeout(() => settle(code, signal, '\n[runner] output streams still open after exit; a descendant may be holding them\n'), drainGraceMs);
     });
     child.on('close', (code, signal) => settle(code, signal));
@@ -340,13 +371,19 @@ export function findJava() {
   return { ok: false, binDir: null, detail: seen.join('; ') };
 }
 
-function portInUse(port) {
+// True if anything accepts a connection on the port over IPv4 or IPv6. A
+// connect that hangs is treated as IN USE: "unknown" must not read as "free".
+function probe(port, host) {
   return new Promise((resolve) => {
-    const sock = net.connect({ port, host: '127.0.0.1' });
+    const sock = net.connect({ port, host });
     sock.once('connect', () => { sock.destroy(); resolve(true); });
     sock.once('error', () => resolve(false));
-    sock.setTimeout(1_000, () => { sock.destroy(); resolve(false); });
+    sock.setTimeout(1_000, () => { sock.destroy(); resolve(true); });
   });
+}
+async function portInUse(port) {
+  const [v4, v6] = await Promise.all([probe(port, '127.0.0.1'), probe(port, '::1')]);
+  return v4 || v6;
 }
 
 async function waitPortFree(port, maxMs) {
@@ -401,6 +438,7 @@ export async function runAll(root, manifest, opts = {}) {
   const concurrency = serial ? 1 : Math.min(os.cpus().length, 4);
   const report = (res) => log(`${res.status.padEnd(7)} ${(res.ms / 1000).toFixed(1).padStart(6)}s  ${label(res.row)}`);
   const run = async (r) => {
+    if (aborted) return { row: r, status: 'ABORTED', code: null, signal: null, ms: 0, output: 'not started: the run was interrupted' };
     if (r.emulator && !(await waitPortFree(EMULATOR_PORT, 10_000))) {
       const res = { row: r, status: 'FAIL', code: null, signal: null, ms: 0, output: `port ${EMULATOR_PORT} did not free up within 10 s; a previous emulator is still shutting down or is orphaned (lsof -i :${EMULATOR_PORT})` };
       report(res);
@@ -448,6 +486,11 @@ async function selfTest() {
     else { failed++; console.error(`  FAIL ${name}${detail ? `: ${detail}` : ''}`); }
   };
   const quiet = () => { const lines = []; return { log: (l) => lines.push(String(l)), lines }; };
+  // Pids of descendants that fixtures spawn on purpose. Every one is killed and
+  // confirmed dead before the self-test returns, on success and on failure.
+  const fixturePids = [];
+  const notePid = (output) => { const m = /GRANDCHILD=(\d+)/.exec(output ?? ''); if (m) fixturePids.push(Number(m[1])); return m ? Number(m[1]) : NaN; };
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
   const has = (q, ...words) => q.lines.some((l) => words.every((w) => l.includes(w)));
 
   try {
@@ -523,10 +566,11 @@ async function selfTest() {
     check('6a hung child is killed and reported TIMEOUT within 5 s', hang.status === 'TIMEOUT' && Date.now() - t0 < 5_000);
     await write('grandchild.test.mjs', header('grandchild.test.mjs') +
       'import { spawn } from "node:child_process";\n' +
-      'spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true }).unref();\n' +
-      'console.log("parent done"); process.exit(0);\n');
+      'const g = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });\n' +
+      'g.unref(); console.log("GRANDCHILD=" + g.pid); console.log("parent done"); process.exit(0);\n');
     t0 = Date.now();
     const gc = await runRow(row('grandchild.test.mjs', 'none'), { root: tmp, timeoutMs: 10_000, drainGraceMs: 500 });
+    notePid(gc.output);
     check('6b a child that leaves a descendant on the pipes still settles (exit + drain grace)',
       gc.status === 'PASS' && Date.now() - t0 < 5_000 && gc.output.includes('parent done') && gc.output.includes('still open'),
       `status=${gc.status} ms=${Date.now() - t0}`);
@@ -574,10 +618,9 @@ async function selfTest() {
       'const g = spawn(process.execPath, ["-e", "process.on(\'SIGTERM\',()=>{}); setInterval(()=>{},1000)"], { stdio: "ignore" });\n' +
       'console.log("GRANDCHILD=" + g.pid);\nprocess.on("SIGTERM", () => {}); setInterval(() => {}, 1000);\n');
     const stubborn = await runRow(row('stubborn.test.mjs', 'none', { group: true }), { root: tmp, timeoutMs: 1_000, killGraceMs: 1_000 });
-    const gpid = Number(/GRANDCHILD=(\d+)/.exec(stubborn.output)?.[1]);
+    const gpid = notePid(stubborn.output);
     await new Promise((r) => setTimeout(r, 300));
-    let grandchildAlive = true;
-    try { process.kill(gpid, 0); } catch { grandchildAlive = false; }
+    const grandchildAlive = alive(gpid);
     check('7i a group that ignores SIGTERM is SIGKILLed, grandchild included',
       stubborn.status === 'TIMEOUT' && stubborn.signal === 'SIGKILL' && gpid > 0 && !grandchildAlive,
       `status=${stubborn.status} signal=${stubborn.signal} gpid=${gpid} alive=${grandchildAlive}`);
@@ -607,8 +650,28 @@ async function selfTest() {
     const key = (res) => res.results.map((x) => `${x.row.file}:${x.status}`).sort().join(',');
     const par = await runAll(tmp, mixed, { log: () => {} });
     const ser = await runAll(tmp, mixed, { serial: true, log: () => {} });
+    // 10. Ctrl-C: an interrupted group row is ABORTED (never PASS) and the exit
+    // code is the conventional one. Run in a child, since the handler exits.
+    await write('polite2.test.mjs', header('polite2.test.mjs') + 'process.on("SIGTERM", () => process.exit(0)); setInterval(() => {}, 1000);\n');
+    const probeScript = path.join(tmp, 'abort-probe.mjs');
+    await writeFile(probeScript,
+      `import { runRow } from ${JSON.stringify(fileURLToPath(import.meta.url))};\n` +
+      `const r = { file: 'polite2.test.mjs', hook: 'none', tz: 'UTC', group: true, emulator: false };\n` +
+      `setTimeout(() => process.kill(process.pid, 'SIGINT'), 600);\n` +
+      `const res = await runRow(r, { root: ${JSON.stringify(tmp)}, timeoutMs: 20000 });\n` +
+      `console.log('STATUS=' + res.status);\n`);
+    const ab = spawnSync(process.execPath, [probeScript], { encoding: 'utf8', timeout: 15_000 });
+    check('10 SIGINT: the interrupted row is ABORTED, not PASS, and the runner exits 130',
+      ab.status === 130 && /STATUS=ABORTED/.test(ab.stdout ?? ''), `exit=${ab.status} out=${(ab.stdout ?? '').trim()} err=${(ab.stderr ?? '').trim().slice(0, 200)}`);
+
     check('9 serial and parallel runs agree', key(par) === key(ser) && !par.ok && par.results.length === 3, `${key(par)} vs ${key(ser)}`);
+    // 11. Nothing a fixture spawned outlives the self-test.
+    for (const pid of fixturePids) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+    await new Promise((r) => setTimeout(r, 300));
+    check('11 no fixture descendant survives the self-test', fixturePids.length >= 2 && fixturePids.every((pid) => !alive(pid)),
+      `pids=${fixturePids} alive=${fixturePids.filter(alive)}`);
   } finally {
+    for (const pid of fixturePids) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
     await rm(tmp, { recursive: true, force: true });
   }
   console.log(`\nself-test: ${passed} passed, ${failed} failed`);

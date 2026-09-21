@@ -95,6 +95,8 @@ const MUTATIONS = [
 // --- Harness -----------------------------------------------------------------
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'glim-rules-mut-'));
+// An 'exit' handler, not try/finally: process.exit() inside a try skips the finally.
+process.on('exit', () => rmSync(tmp, { recursive: true, force: true }));
 let problems = 0;
 
 function applyEdits(m) {
@@ -116,7 +118,7 @@ function runAgainst(rulesFile) {
   return { code: res.status, red, ran, stderr: res.stderr ?? '' };
 }
 
-try {
+{
   // Control: the unmutated rules must pass, or nothing below means anything.
   const controlFile = path.join(tmp, 'control.rules');
   writeFileSync(controlFile, RULES);
@@ -136,6 +138,12 @@ try {
       problems++; console.error(`  FAIL ${m.id} ${err.message}`); continue;
     }
     const r = runAgainst(file);
+    if (r.code !== 3 && r.ran !== 0 && r.ran !== control.ran) {
+      // A child that died partway could already have reddened its mustRed
+      // cases; without this it would be reported ok on a truncated run.
+      problems++; console.error(`  FAIL ${m.id} TRUNCATED RUN: executed ${r.ran} checks, the control executed ${control.ran} - ${m.what}`);
+      continue;
+    }
     if (r.code === 3 || r.ran === 0) {
       problems++; console.error(`  FAIL ${m.id} MUTATION BROKE COMPILATION (it proves nothing): ${m.what}\n${r.stderr.trim().split('\n').slice(0, 3).join('\n')}`);
       continue;
@@ -149,8 +157,6 @@ try {
     if (r.red.length > 0 && missing.length === 0) console.log(`  ok   ${m.id} red: [${r.red}] - ${m.what}`);
     else { problems++; console.error(`  FAIL ${m.id} NOT DETECTED: expected at least [${m.mustRed}] red, got [${r.red}] (missing [${missing}]) - ${m.what}`); }
   }
-} finally {
-  rmSync(tmp, { recursive: true, force: true });
 }
 
 console.log(`\nrules mutations: ${MUTATIONS.length - problems} of ${MUTATIONS.length} behaved as specified`);

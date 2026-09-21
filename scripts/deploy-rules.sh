@@ -38,7 +38,7 @@ set -euo pipefail
 
 FIREBASE_TOOLS="firebase-tools@15.30.2"
 RULES_FILE="firestore.rules"
-CONFIG_FILES=("firestore.rules" "firebase.json" ".firebaserc")
+CONFIG_FILES=("${RULES_FILE}" "firebase.json" ".firebaserc")
 LOG_FILE="RULES_DEPLOYS.md"
 
 TARGET=""
@@ -57,7 +57,8 @@ Publish firestore.rules to a Firebase project. Run from anywhere in the repo.
               to validate the rules against that project. Deploys nothing.
               Needs a logged-in CLI and network access.
   -s          Status. Prints the last logged deploy per alias and whether it
-              matches the committed firestore.rules. Offline; changes nothing.
+              matches the COMMITTED firestore.rules (HEAD). Offline; changes
+              nothing; takes no other options.
   -y          Skip the typed confirmation for prod. Never honoured in CI or
               without a terminal, and rejected together with -e both.
   -h          Show this message.
@@ -100,14 +101,23 @@ resolve_project() {
   ' "$1"
 }
 
-blob_hash() { git hash-object "${RULES_FILE}"; }
+# The content the CLI will read (working tree) and the content that is committed.
+# A deploy requires a clean tree, so there the two are equal by construction.
+blob_hash()      { git hash-object "${RULES_FILE}"; }
+committed_hash() { git rev-parse "HEAD:${RULES_FILE}"; }
 
 # --- Status mode -------------------------------------------------------------
 
 if [[ "${STATUS}" -eq 1 ]]; then
+  if [[ -n "${TARGET}" || "${DRY_RUN}" -eq 1 || "${ASSUME_YES}" -eq 1 ]]; then
+    die "-s takes no other options; it reports both aliases and changes nothing."
+  fi
   [[ -f "${LOG_FILE}" ]] || die "${LOG_FILE} not found; nothing has been deployed with this script yet"
-  current="$(blob_hash)"
-  echo "Committed/working ${RULES_FILE} blob: ${current}"
+  current="$(committed_hash)"
+  echo "Committed ${RULES_FILE} blob (HEAD): ${current}"
+  if [[ "$(blob_hash)" != "${current}" ]]; then
+    echo "NOTE: the working copy of ${RULES_FILE} has uncommitted changes; status compares against HEAD, not the working copy."
+  fi
   for alias in dev prod; do
     line="$(grep -E "^\| [0-9T:Z-]+ \| ${alias} \|" "${LOG_FILE}" | tail -1 || true)"
     if [[ -z "${line}" ]]; then
@@ -115,7 +125,7 @@ if [[ "${STATUS}" -eq 1 ]]; then
     else
       logged="$(echo "${line}" | awk -F'|' '{gsub(/ /,"",$6); print $6}')"
       when="$(echo "${line}" | awk -F'|' '{gsub(/ /,"",$2); print $2}')"
-      if [[ "${logged}" == "${current}" ]]; then state="MATCHES the current file"; else state="DIFFERS from the current file (${logged})"; fi
+      if [[ "${logged}" == "${current}" ]]; then state="MATCHES the committed file"; else state="DIFFERS from the committed file (deployed blob ${logged})"; fi
       echo "${alias}: last deployed ${when}, ${state}"
     fi
   done
@@ -130,7 +140,7 @@ case "${TARGET}" in
   *)  die "unknown target '${TARGET}' (expected dev, prod or both)" ;;
 esac
 
-if [[ "${TARGET}" == "both" && "${ASSUME_YES}" -eq 1 ]]; then
+if [[ "${TARGET}" == "both" && "${ASSUME_YES}" -eq 1 && "${DRY_RUN}" -eq 0 ]]; then
   die "-y cannot be combined with -e both: an unattended double deploy is exactly what this script exists to prevent"
 fi
 

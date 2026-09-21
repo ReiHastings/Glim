@@ -11,8 +11,8 @@ non-zero on failure. The absence of a broader suite is tracked in
 ### Everything at once
 
 ```bash
-npm test              # everything except the two slow runs (about 10 s; includes the rules emulator test)
-npm run test:all      # everything, 35 runs from 32 files (about 90 s locally); what CI runs
+npm test              # everything except the two slow runs (about 7 s; includes the rules emulator test)
+npm run test:all      # everything, 35 runs from 32 files (about 50 s locally, 3 min on a cold CI run); what CI runs
 node tests/run-all.mjs --only cycle    # a subset, by file-name substring
 node tests/run-all.mjs --self-test     # proves the runner's own checks fire
 ```
