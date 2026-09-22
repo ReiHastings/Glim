@@ -5,6 +5,16 @@
   "ios": {
     "backgroundColor": "#0d0820"
   },
+  "experimental": {
+    "ios": {
+      "spm": {
+        "swiftToolsVersion": "6.1",
+        "packageTraits": {
+          "@capacitor-firebase/authentication": ["Google"]
+        }
+      }
+    }
+  },
   "plugins": {
     "FirebaseAuthentication": {
       "skipNativeAuth": false,
