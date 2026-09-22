@@ -70,6 +70,7 @@ function emulatorPort() {
 const EMULATOR_PORT = emulatorPort();
 const MIN_JAVA = 21;                    // firebase-tools 15 dropped older Java
 const CLIENT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const PLATFORMS = new Set(['darwin', 'linux', 'win32']);   // values of process.platform a row may name
 
 // --- Manifest ----------------------------------------------------------------
 // Every row carries an explicit tz. Rows whose documentation names no zone get
@@ -81,12 +82,20 @@ const CLIENT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 // serial   - runs in phase 2, one at a time (implied by slow and by emulator)
 // group    - spawned as a process-group leader and stopped gracefully (implied by
 //            emulator; settable alone so the self-test can exercise it without Java)
+// platform - runs only when process.platform equals this (e.g. 'darwin' for a
+//            test that needs PlistBuddy); elsewhere it is reported SKIP and
+//            counted separately, never as a failure. CI is Linux.
 const row = (file, hook, opts = {}) => {
   if (opts === null || typeof opts !== 'object' || Array.isArray(opts)) {
     throw new TypeError(`row('${file}'): the third argument is an options object, got ${JSON.stringify(opts)}`);
   }
-  const { tz = NY, slow = false, serial = false, emulator = false, group = false } = opts;
-  return { file, hook, tz, slow, emulator, serial: serial || slow || emulator, long: slow || emulator, group: group || emulator };
+  const { tz = NY, slow = false, serial = false, emulator = false, group = false, platform = null } = opts;
+  // A misspelt platform would match no machine and retire the row everywhere
+  // with a green suite, so the vocabulary is closed.
+  if (platform !== null && !PLATFORMS.has(platform)) {
+    throw new TypeError(`row('${file}'): platform must be one of ${[...PLATFORMS].join(', ')}, got ${JSON.stringify(platform)}`);
+  }
+  return { file, hook, tz, slow, emulator, serial: serial || slow || emulator, long: slow || emulator, group: group || emulator, platform };
 };
 
 export const MANIFEST = [
@@ -128,14 +137,20 @@ export const MANIFEST = [
   row('flushsync_scope.test.mjs', 'none'),
   row('syncbus_wiring.test.mjs', 'none'),
   row('token_parity.test.mjs', 'none'),
+  row('privacy_agreement.test.mjs', 'none'),
+  row('deploy_site.test.mjs', 'none'),
   // Firestore emulator (needs Java 21+; see docs/plan_stage1_rules.md)
   row('firestore_rules_emulator.test.mjs', 'none', { emulator: true }),
   row('firestore_rules_mutations.test.mjs', 'none', { emulator: true, slow: true }),   // ~1-3 min: test:all and CI only
+  // Release tooling (needs PlistBuddy; see docs/plan_stage2_release.md)
+  row('release_preflight.test.mjs', 'none', { platform: 'darwin' }),
 ];
 
 // --- Pre-flight: coverage, duplicates, fidelity -----------------------------
 
 const USAGE_RE = /(?:TZ=(\S+)\s+)?node\s+(?:--import\s+(\S+)\s+)?tests\/(\S+\.test\.mjs)/g;
+// A `platform: <name>` line inside the usage block declares the row's platform.
+const PLATFORM_RE = /^\s*platform:\s*(\S+)\s*$/m;
 
 function hookOfImport(importPath) {
   if (!importPath) return 'none';
@@ -166,7 +181,7 @@ async function declaredUsage(root, file) {
   const text = await readFile(path.join(root, 'tests', file), 'utf8');
   const block = usageBlock(text);
   const hooks = new Set(), zones = new Set();
-  if (block === null) return { hooks, zones, commands: 0, emulator: false };
+  if (block === null) return { hooks, zones, commands: 0, emulator: false, platform: null };
   let commands = 0;
   for (const m of block.matchAll(USAGE_RE)) {
     if (m[3] !== file) continue;
@@ -174,7 +189,7 @@ async function declaredUsage(root, file) {
     hooks.add(hookOfImport(m[2]));
     zones.add(m[1] ?? null);
   }
-  return { hooks, zones, commands, emulator: /emulators:exec/.test(block) };
+  return { hooks, zones, commands, emulator: /emulators:exec/.test(block), platform: PLATFORM_RE.exec(block)?.[1] ?? null };
 }
 
 export async function preflight(root, manifest) {
@@ -199,11 +214,16 @@ export async function preflight(root, manifest) {
   for (const f of inManifest) {
     if (!onDisk.includes(f)) continue;
     const rows = manifest.filter((r) => r.file === f);
-    const { hooks, zones, commands, emulator } = await declaredUsage(root, f);
+    const { hooks, zones, commands, emulator, platform } = await declaredUsage(root, f);
     if (commands === 0) { problems.push(`fidelity: ${f} has no parsable command in its header usage block`); continue; }
     const rowEmulator = rows.some((r) => r.emulator);
     if (emulator !== rowEmulator) {
       problems.push(`fidelity: ${f} header ${emulator ? 'uses' : 'does not use'} emulators:exec, manifest says emulator: ${rowEmulator}`);
+    }
+    // Platform: the header's `platform:` line and the rows' flag must agree, both directions.
+    const rowPlatforms = new Set(rows.map((r) => r.platform));
+    if (rowPlatforms.size !== 1 || [...rowPlatforms][0] !== platform) {
+      problems.push(`fidelity: ${f} header declares platform ${platform ?? 'none'}, manifest says ${[...rowPlatforms].map((p) => p ?? 'none').join('|')}`);
     }
     const rowHooks = new Set(rows.map((r) => r.hook));
     if (hooks.size !== 1 || rowHooks.size !== 1 || [...hooks][0] !== [...rowHooks][0]) {
@@ -406,20 +426,25 @@ async function pool(rows, concurrency, fn) {
 }
 
 export async function runAll(root, manifest, opts = {}) {
-  const { fast = false, only = null, serial = false, log = console.log, timeouts = TIMEOUT_MS } = opts;
+  const { fast = false, only = null, serial = false, log = console.log, timeouts = TIMEOUT_MS, platform = process.platform } = opts;
   const problems = await preflight(root, manifest);
   if (problems.length) {
     for (const p of problems) log(`PRE-FLIGHT ${p}`);
-    return { ok: false, problems, results: [], skipped: 0 };
+    return { ok: false, problems, results: [], skipped: 0, platformSkipped: 0 };
   }
-  let selected = manifest;
+  // Platform-bound rows for another platform leave the selection first, so
+  // they are neither "not selected" nor run; they get their own bucket.
+  const offPlatform = manifest.filter((r) => r.platform && r.platform !== platform);
+  for (const r of offPlatform) log(`SKIP    ${'-'.padStart(6)}   ${label(r)} (${r.platform} only)`);
+  const platformSkipped = offPlatform.length;
+  let selected = manifest.filter((r) => !offPlatform.includes(r));
   if (only) selected = selected.filter((r) => r.file.includes(only));
-  const notSelected = manifest.length - selected.length;
+  const notSelected = manifest.length - platformSkipped - selected.length;
   const skipped = fast ? selected.filter((r) => r.slow).length : 0;
   if (fast) selected = selected.filter((r) => !r.slow);
   if (selected.length === 0) {
     log(`no runs selected${only ? ` for --only ${only}` : ''}`);
-    return { ok: false, problems: ['empty selection'], results: [], skipped };
+    return { ok: false, problems: ['empty selection'], results: [], skipped, platformSkipped };
   }
   // Emulator pre-flight, only when an emulator row will actually run.
   let extraPath = null;
@@ -427,12 +452,12 @@ export async function runAll(root, manifest, opts = {}) {
     const java = findJava();
     if (!java.ok) {
       log(`PRE-FLIGHT emulator: Java ${MIN_JAVA}+ is required and was not found (${java.detail}). Install with: brew install openjdk@21`);
-      return { ok: false, problems: ['java'], results: [], skipped };
+      return { ok: false, problems: ['java'], results: [], skipped, platformSkipped };
     }
     extraPath = java.binDir;
     if (await portInUse(EMULATOR_PORT)) {
       log(`PRE-FLIGHT emulator: port ${EMULATOR_PORT} is already in use, probably a stale emulator. Find it with: lsof -i :${EMULATOR_PORT}`);
-      return { ok: false, problems: ['port'], results: [], skipped };
+      return { ok: false, problems: ['port'], results: [], skipped, platformSkipped };
     }
   }
   const concurrency = serial ? 1 : Math.min(os.cpus().length, 4);
@@ -457,14 +482,14 @@ export async function runAll(root, manifest, opts = {}) {
     log(f.output.trimEnd());
   }
   // Summary identity: everything in the manifest is accounted for exactly once.
-  const accounted = results.length + skipped + notSelected;
+  const accounted = results.length + skipped + platformSkipped + notSelected;
   if (accounted !== manifest.length) {
-    log(`RUNNER BUG: ${results.length} ran + ${skipped} skipped + ${notSelected} not selected = ${accounted}, manifest has ${manifest.length}`);
-    return { ok: false, problems: ['summary identity'], results, skipped };
+    log(`RUNNER BUG: ${results.length} ran + ${skipped} skipped + ${platformSkipped} off-platform + ${notSelected} not selected = ${accounted}, manifest has ${manifest.length}`);
+    return { ok: false, problems: ['summary identity'], results, skipped, platformSkipped };
   }
   log(`\n${manifest.length} runs: ${results.length - failures.length} passed, ${failures.length} failed, ${skipped} skipped` +
-      (only ? ` (${notSelected} not selected)` : ''));
-  return { ok: failures.length === 0, problems: [], results, skipped };
+      (platformSkipped ? `, ${platformSkipped} off-platform` : '') + (only ? ` (${notSelected} not selected)` : ''));
+  return { ok: failures.length === 0, problems: [], results, skipped, platformSkipped };
 }
 
 // --- Self-test ---------------------------------------------------------------
@@ -629,6 +654,29 @@ async function selfTest() {
     check('7j java -version parsing: modern, legacy, and garbage',
       parseJavaMajor('openjdk version "21.0.12.1" 2026-08-18') === 21 && parseJavaMajor('java version "1.8.0_292"') === 8 &&
       parseJavaMajor('openjdk version "17.0.9"') === 17 && parseJavaMajor('Unable to locate a Java Runtime') === null);
+
+    // 7k. Platform-bound rows: off-platform is its own bucket, never a failure,
+    //     the identity holds with and without --only, and fidelity is two-way.
+    await clear();
+    await write('mac.test.mjs', header('mac.test.mjs') + '//   platform: darwin\nprocess.exit(0);\n');
+    await write('any.test.mjs', header('any.test.mjs') + 'process.exit(0);\n');
+    const platRows = [row('mac.test.mjs', 'none', { platform: 'darwin' }), row('any.test.mjs', 'none')];
+    q = quiet();
+    r = await runAll(tmp, platRows, { platform: 'linux', log: q.log });
+    check('7k off-platform row is SKIPped, counted, and the run is ok', r.ok && r.platformSkipped === 1 && r.results.length === 1 && has(q, 'SKIP', 'mac', 'darwin only') && !has(q, 'RUNNER BUG') && has(q, '2 runs: 1 passed, 0 failed, 0 skipped, 1 off-platform'));
+    q = quiet();
+    r = await runAll(tmp, platRows, { platform: 'linux', only: 'any', log: q.log });
+    check('7l identity holds with --only alongside an off-platform row', r.ok && r.platformSkipped === 1 && r.results.length === 1 && !has(q, 'RUNNER BUG'));
+    q = quiet();
+    r = await runAll(tmp, platRows, { platform: 'darwin', log: q.log });
+    check('7m the same row runs on its platform', r.ok && r.platformSkipped === 0 && r.results.length === 2);
+    pf = await preflight(tmp, [row('mac.test.mjs', 'none'), row('any.test.mjs', 'none')]);
+    check('7n header declares a platform, manifest row does not: fails pre-flight', pf.some((l) => l.includes('fidelity') && l.includes('mac.test.mjs') && l.includes('platform')), pf.join('; '));
+    pf = await preflight(tmp, [row('mac.test.mjs', 'none', { platform: 'darwin' }), row('any.test.mjs', 'none', { platform: 'darwin' })]);
+    check('7o manifest row declares a platform, header does not: fails pre-flight', pf.some((l) => l.includes('fidelity') && l.includes('any.test.mjs') && l.includes('platform')), pf.join('; '));
+    threw = false;
+    try { row('x.test.mjs', 'none', { platform: 'darwn' }); } catch { threw = true; }
+    check('7p row() rejects a platform outside the closed vocabulary', threw);
 
     // 8. Selection semantics on a clean tree with one covered file.
     await clear();

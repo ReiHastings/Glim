@@ -19,3 +19,6 @@ message_pools/
 # Visual harness run output (the blessed baseline IS committed)
 client/tests/visual/shots/current/
 client/tests/visual/shots/sweeps/
+
+# Written by scripts/release-preflight.sh on a passing -v run; read by -a.
+client/.release-preflight.json

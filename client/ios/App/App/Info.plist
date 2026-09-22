@@ -67,6 +67,8 @@
 	<string>Glim does not write to Health.</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>Glim reads your daily step count from Health to fill in your steps for you. Glim never writes to Health.</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>UIStatusBarStyle</key>
 	<string>UIStatusBarStyleLightContent</string>
 	<key>UISupportedInterfaceOrientations</key>
