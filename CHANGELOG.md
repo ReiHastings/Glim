@@ -14,6 +14,9 @@ expiry) is written on its line when the next build is prepared. Tags are
 
 ## [Unreleased]
 
+### Changed
+- Privacy policy: the contact address is glimwellness@gmail.com (was a placeholder).
+
 ## [1.0.0] - 2026-09-22
 
 The first TestFlight release: the owl-moth companion with water, steps (from
