@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glim Privacy Policy</title>
+<!--
+  Glim's privacy policy (docs/plan_stage2_release.md 4.5). Published to
+  https://glim-da8c2.web.app/privacy.html by scripts/deploy-site.sh.
+
+  ONE LIST, THREE PLACES: every <li data-type="..."> in "What Glim collects"
+  names an Apple privacy-manifest data type, and the set must equal the one in
+  client/ios/App/App/PrivacyInfo.xcprivacy (client/tests/privacy_agreement.test.mjs
+  asserts it) and, later, the App Privacy answers in App Store Connect.
+
+  The contact address is a placeholder until Reina's dedicated Glim address
+  exists; scripts/deploy-site.sh refuses to publish while the placeholder
+  token is present anywhere under site/.
+-->
+<style>
+  :root { color-scheme: light dark; --fg: #1d1a2b; --bg: #fbf9ff; --muted: #5b566e; --line: #d9d4e8; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #ece8f7; --bg: #0d0820; --muted: #a9a3bd; --line: #2d2542; } }
+  body { margin: 0; padding: 2rem 1rem 4rem; background: var(--bg); color: var(--fg); font: 17px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 40rem; margin: 0 auto; }
+  h1 { font-size: 1.7rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1.15rem; margin: 2rem 0 .5rem; }
+  p.meta { color: var(--muted); margin: 0 0 1.5rem; }
+  li { margin: .35rem 0; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
+  code { font-size: .95em; }
+</style>
+</head>
+<body>
+<main>
+<h1>Glim Privacy Policy</h1>
+<p class="meta">Version 1, 22 September 2026. Applies to the Glim iOS app (bundle <code>com.reihastings.glim</code>), listed in TestFlight and the App Store as Glim Wellness Companion.</p>
+
+<p>Glim is a personal wellness companion made by one person, Reina Hastings. This page says what Glim stores, where, and what you can ask for. It is written to be read, not skimmed past; it is short because Glim does little with your data.</p>
+
+<h2>What Glim collects</h2>
+<p>Glim stores only what it needs to work as an app you sign in to and come back to:</p>
+<ul>
+  <li data-type="Name"><strong>Your name</strong>, as your Google account provides it, shown in the app.</li>
+  <li data-type="EmailAddress"><strong>Your email address</strong>, from your Google account, used to identify your account.</li>
+  <li data-type="UserID"><strong>An account identifier</strong> issued by Firebase when you sign in, which keys your data on the server.</li>
+  <li data-type="Health"><strong>Health data</strong>: the water, nutrition, symptom and cycle entries you type into Glim, and your <strong>daily step count</strong> read from Apple Health, if you allow it. Glim reads only the step count, never any other Health category, and never writes to Health.</li>
+  <li data-type="OtherUserContent"><strong>Journal entries</strong> you write in Glim.</li>
+</ul>
+<p>Glim does not collect your location, contacts, photos, device identifiers for advertising, or anything else from your phone.</p>
+
+<h2>How it is collected</h2>
+<p>You type it in, or you grant Glim permission to read your step count from Apple Health. Nothing is collected in the background or inferred from your behaviour.</p>
+
+<h2>Where it lives</h2>
+<p>Your entries are stored on your phone, so Glim works offline, and synced to Google Firebase (Cloud Firestore and Firebase Authentication) in Google's United States multi-region (<code>nam5</code>) under your own account. Security rules on the server let only your signed-in account read or write your records. Google acts as Glim's infrastructure provider and processes this data on Glim's behalf under <a href="https://firebase.google.com/support/privacy">Firebase's privacy and security terms</a>, which offer protection equal to what this policy promises. Glim does not store your data in iCloud.</p>
+
+<h2>What Glim does not do</h2>
+<ul>
+  <li>No analytics, no advertising, no tracking, and no advertising identifiers.</li>
+  <li>No selling or sharing of your data with anyone, including third-party AI services.</li>
+  <li>No use of your Health data for advertising, marketing, or data mining. Your step count is used only to show your steps in Glim.</li>
+  <li>No third parties beyond Google as the infrastructure described above.</li>
+</ul>
+
+<h2>Your choices and deleting your data</h2>
+<ul>
+  <li>You can decline or revoke Apple Health access at any time in the iOS Settings app (Privacy &amp; Security &gt; Health &gt; Glim). Glim keeps working; steps are then whatever you enter by hand.</li>
+  <li>You can delete individual entries inside Glim.</li>
+  <li>To delete your account and everything stored on the server, email <a href="mailto:CONTACT_EMAIL_TBD">CONTACT_EMAIL_TBD</a> from the address you signed in with. Deletion is done by hand within 14 days and confirmed by reply. The copy on your phone is removed when you delete the app.</li>
+</ul>
+
+<h2>Changes</h2>
+<p>Changes to this policy are dated at the top of this page and noted in Glim's changelog. Continued use after a change means the new version applies.</p>
+
+<h2>Contact</h2>
+<p>Reina Hastings, <a href="mailto:CONTACT_EMAIL_TBD">CONTACT_EMAIL_TBD</a>.</p>
+
+<hr>
+<p class="meta"><a href="/">Glim</a></p>
+</main>
+</body>
+</html>
