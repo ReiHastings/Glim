@@ -22,3 +22,6 @@ client/tests/visual/shots/sweeps/
 
 # Written by scripts/release-preflight.sh on a passing -v run; read by -a.
 client/.release-preflight.json
+
+# Firebase CLI hosting cache, written by scripts/deploy-site.sh
+.firebase/
