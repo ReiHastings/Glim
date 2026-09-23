@@ -14,6 +14,28 @@ through Beta App Review, so bump it when a set of changes deserves a name, not
 per upload. Every upload gets a **tag** `vX.Y.Z-bN` on the exact commit
 archived. A pushed tag is never moved or deleted.
 
+## 0. Why the process has this shape
+
+Four facts explain every step below; the long version, with a worked
+example, is in `docs/glim_environment.Rmd` Section 2.
+
+- **Xcode does not run Vite.** The archive contains whatever
+  `client/ios/App/App/public/` holds on disk, however old. Preflight `-v`
+  rebuilds it from `HEAD` and fingerprints it; nothing may sync afterwards.
+- **The archive is made later than the check.** `-v` inspects the tree; Xcode
+  reads the tree again minutes later. `-a` fingerprints the bundle inside the
+  archive and compares it with `-v`'s receipt, closing that gap.
+- **Friends run old builds for weeks.** Rules go live before the client that
+  needs them, and a tightening waits until the old client is gone.
+- **A new version means a Beta App Review; a new build of the same version
+  usually does not.** Hold the version across a testing cycle; the build
+  number is the counter that always moves.
+
+The dev app (`ios-dev.sh`, amber icon, `glim-dev`) is where a feature is
+tried before it is merged. It never goes through TestFlight, and its only
+part in this file is the residue it can leave in the tree, which checks 7
+and 9 and `-a` exist to catch.
+
 ## 1. Decide what ships
 
 1. If this is a new version: in `CHANGELOG.md`, turn `[Unreleased]` into
