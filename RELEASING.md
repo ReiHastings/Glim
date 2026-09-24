@@ -116,7 +116,10 @@ scripts/release-preflight.sh -v X.Y.Z      # again; it now verifies the tag
    byte, same version and build, production credentials, the privacy manifest
    and export key present, and only the expected frameworks embedded).
 4. **Distribute App** > TestFlight & App Store (Xcode's wording varies) >
-   Upload, with automatic signing. Xcode uploads the dSYMs with it, which is
+   Upload, with automatic signing. **Untick "Manage Version and Build
+   Number"** in that dialog: ticked, Xcode silently renumbers a build that
+   Apple has already seen, which is how build 2 came to exist on
+   2026-09-23 as a second upload of build 1. Upload each archive once. Xcode uploads the dSYMs with it, which is
    what makes tester crash reports readable.
 5. Wait for App Store Connect's processing email (10 to 30 minutes).
 6. **If the upload or processing fails:** the build number and tag are spent.
