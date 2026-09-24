@@ -89,18 +89,32 @@ scripts/release-preflight.sh -v X.Y.Z      # again; it now verifies the tag
 ## 5. Archive, inspect, upload (Xcode)
 
 1. If any Swift package changed since the last archive (a plugin update, a
-   trait change): **Product > Clean Build Folder** first. Xcode's incremental
-   build has been seen to keep a stale link plan.
+   trait change): **File > Packages > Reset Package Caches**, wait for the
+   resolution bar to finish, then **Product > Clean Build Folder**. Clean
+   Build Folder alone does not touch package state; on 2026-09-23 an archive
+   made after a clean still embedded an SDK the project no longer linked.
+   If the GUI then refuses to build ("Missing package product"), the
+   terminal is equivalent and has been reliable:
+   ```
+   cd client/ios/App && xcodebuild archive -project App.xcodeproj -scheme App \
+     -configuration Release -destination 'generic/platform=iOS' \
+     -archivePath ~/Library/Developer/Xcode/Archives/$(date +%F)/Glim-X.Y.Z-bN.xcarchive \
+     -derivedDataPath ~/Library/Developer/Xcode/DerivedData/glim-archive -allowProvisioningUpdates
+   ```
+   The Organizer lists the result (as "App X.Y.Z (N)") and uploads it like
+   any other archive.
 2. Destination **Any iOS Device (arm64)**, then **Product > Archive**. The
    Organizer opens with the new archive selected.
-3. Right-click the archive > **Show in Finder** to get its path, then:
+3. Get the archive's path. Archive names contain an invisible narrow space
+   before "PM", so a pasted path does not resolve; drag the archive from
+   Finder into the terminal instead, or use the newest one:
    ```
-   scripts/release-preflight.sh -a "<path>/App.xcarchive"
+   scripts/release-preflight.sh -a "$(ls -td ~/Library/Developer/Xcode/Archives/*/*.xcarchive | head -1)"
    ```
    Must print `PASS`. This is the only step that ties the archive you are
    about to upload to the tree preflight blessed (same web bundle byte for
    byte, same version and build, production credentials, the privacy manifest
-   and export key present).
+   and export key present, and only the expected frameworks embedded).
 4. **Distribute App** > TestFlight & App Store (Xcode's wording varies) >
    Upload, with automatic signing. Xcode uploads the dSYMs with it, which is
    what makes tester crash reports readable.

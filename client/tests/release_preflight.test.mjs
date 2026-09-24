@@ -292,9 +292,10 @@ try {
   check('a00 record refreshed on a clean pass', r.status === 0);
   const ARCHIVE = join(tmp, 'App.xcarchive');
   const APP = join(ARCHIVE, 'Products/Applications/App.app');
-  const buildArchive = ({ version = '1.0.0', build = '1', enc = ['bool', 'false'], bundle = true, manifest = true, plist = 'glim-da8c2' } = {}) => {
+  const buildArchive = ({ version = '1.0.0', build = '1', enc = ['bool', 'false'], bundle = true, manifest = true, plist = 'glim-da8c2', frameworks = ['Capacitor.framework', 'Cordova.framework'] } = {}) => {
     rmSync(ARCHIVE, { recursive: true, force: true });
     mkdirSync(APP, { recursive: true });
+    for (const fw of frameworks) mkdirSync(join(APP, 'Frameworks', fw), { recursive: true });
     if (bundle) cpSync(BUNDLE, join(APP, 'public'), { recursive: true });
     plistAdd(join(APP, 'GoogleService-Info.plist'), [['PROJECT_ID', 'string', plist]]);
     if (manifest) writeFileSync(join(APP, 'PrivacyInfo.xcprivacy'), '');
@@ -303,7 +304,13 @@ try {
   const aFails = (res, code, ...words) => res.status !== 0 && res.out.split('\n').some((l) => l.startsWith(`FAIL ${code} `) && words.every((w) => l.includes(w)));
   buildArchive();
   r = run(['-a', ARCHIVE]);
-  check('a01 matching archive passes every A check', r.status === 0 && /^PASS/m.test(r.out) && ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7'].every((c) => r.out.includes(`ok   ${c} `)), r.out);
+  check('a01 matching archive passes every A check', r.status === 0 && /^PASS/m.test(r.out) && ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8'].every((c) => r.out.includes(`ok   ${c} `)), r.out);
+  buildArchive({ frameworks: ['Capacitor.framework', 'Cordova.framework', 'FBSDKCoreKit.framework', 'FBSDKLoginKit.framework'] });
+  r = run(['-a', ARCHIVE]);
+  check('a01b an unexpected embedded framework fails A8 and names it (the 2026-09-23 archive)', aFails(r, 'A8', 'FBSDKCoreKit.framework', 'FBSDKLoginKit.framework'), r.out);
+  buildArchive({ frameworks: [] });
+  r = run(['-a', ARCHIVE]);
+  check('a01c no Frameworks folder at all passes A8', r.status === 0 && r.out.includes('ok   A8 '), r.out);
   appendFileSync(join(APP, 'public/index.html'), ' ');
   r = run(['-a', ARCHIVE]);
   check('a02 one byte changed in the archive bundle fails A5', aFails(r, 'A5', 'differs'), r.out);
