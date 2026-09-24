@@ -17,7 +17,8 @@
 #              synced bundle) in client/.release-preflight.json, gitignored.
 #              -a compares an .xcarchive against that record, so the archive
 #              that is about to be uploaded is provably the one -v checked and
-#              not one made after an ios-dev.sh run in between.
+#              not one made after an ios-dev.sh run in between, and checks
+#              that only the expected frameworks are embedded.
 #
 # Inputs:      client/ios/App/App.xcodeproj/project.pbxproj (version, build)
 #              CHANGELOG.md (newest versioned section and its build lines)
@@ -57,6 +58,9 @@ RECORD="client/.release-preflight.json"
 RULES_LOG="RULES_DEPLOYS.md"
 PROD_PROJECT="glim-da8c2"
 BUNDLE_ID="com.reihastings.glim"
+# Every dynamic framework the archive may embed. Anything else (the Facebook
+# SDK turned up here on 2026-09-23 through a stale Xcode package cache) fails.
+ALLOWED_FRAMEWORKS="Capacitor.framework Cordova.framework"
 WORKFLOW="CI"
 SCHEMA=1
 PB="/usr/libexec/PlistBuddy"
@@ -184,6 +188,17 @@ if [[ -n "${ARCHIVE}" ]]; then
   if [[ "${gp}" == "${PROD_PROJECT}" ]]; then ok A6 "GoogleService-Info.plist is ${gp}"; else fail A6 "credentials" "archive's GoogleService-Info.plist PROJECT_ID is '${gp:-absent}', expected ${PROD_PROJECT}"; fi
 
   if [[ -f "${APP}/PrivacyInfo.xcprivacy" ]]; then ok A7 "PrivacyInfo.xcprivacy present"; else fail A7 "privacy manifest" "App.app has no PrivacyInfo.xcprivacy (is it in Copy Bundle Resources?)"; fi
+
+  # Embedded frameworks: an allowlist, because a stale package cache can link
+  # an SDK the project no longer declares, and nothing else in the archive says so.
+  extra=""
+  for fw in "${APP}"/Frameworks/*.framework; do
+    [[ -e "${fw}" ]] || continue
+    name="$(basename "${fw}")"
+    case " ${ALLOWED_FRAMEWORKS} " in *" ${name} "*) ;; *) extra="${extra}${name} ";; esac
+  done
+  if [[ -z "${extra}" ]]; then ok A8 "embedded frameworks are only: ${ALLOWED_FRAMEWORKS}"
+  else fail A8 "frameworks" "unexpected embedded framework(s): ${extra}(stale Xcode package cache? File > Packages > Reset Package Caches, or archive with xcodebuild)"; fi
 
   echo ""
   if [[ "${FAILURES}" -eq 0 ]]; then echo "PASS: archive matches the -v record; distribute it."; exit 0
