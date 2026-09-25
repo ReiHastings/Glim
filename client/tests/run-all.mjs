@@ -144,6 +144,7 @@ export const MANIFEST = [
   row('firestore_rules_mutations.test.mjs', 'none', { emulator: true, slow: true }),   // ~1-3 min: test:all and CI only
   // Release tooling (needs PlistBuddy; see docs/plan_stage2_release.md)
   row('release_preflight.test.mjs', 'none', { platform: 'darwin' }),
+  row('ci_scripts.test.mjs', 'none', { platform: 'darwin' }),
 ];
 
 // --- Pre-flight: coverage, duplicates, fidelity -----------------------------
