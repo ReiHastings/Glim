@@ -34,5 +34,6 @@ sign-in, offline-first storage with Firestore sync.
 - The Facebook SDK is no longer linked (a plugin default pulled it in; nothing
   used it).
 
-- build 1: first TestFlight upload, internal group. Processed clean; no export-compliance question, no manifest notice.
+- build 1: first TestFlight upload, internal group. Processed clean; no export-compliance question, no manifest notice. Smoke test passed 2026-09-24.
 - build 2: same archive as build 1, uploaded twice; Xcode renumbered it. Identical contents.
+- build 3: the Stage 2 acceptance run, released strictly from RELEASING.md.
