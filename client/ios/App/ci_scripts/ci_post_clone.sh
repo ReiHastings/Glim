@@ -33,9 +33,12 @@
 #              below, which is refused outright when CI_XCODE_CLOUD is TRUE.
 #
 # Test seam:   CI_SCRIPTS_ROOT=<fixture repo> and CI_SCRIPTS_FAKE=1 (both, or
-#              neither). Under the seam, CI_SCRIPTS_NODE_CMD, CI_SCRIPTS_INSTALL_CMD
-#              and CI_SCRIPTS_SYNC_CMD replace the Node download, npm ci and
-#              npm run sync:ios; an unset hook skips that step.
+#              neither). Under the seam, CI_SCRIPTS_NODE_DIST points the Node
+#              download at a local directory (file://...) holding a tarball and
+#              SHASUMS256.txt, or is unset to skip the install; and
+#              CI_SCRIPTS_INSTALL_CMD and CI_SCRIPTS_SYNC_CMD replace npm ci and
+#              npm run sync:ios (unset: skipped). The script itself needs no
+#              Node until npm runs; the changelog is parsed with awk on purpose.
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
@@ -60,7 +63,7 @@ step() { printf '\n=== %s ===\n' "$*"; }
 # The test seam is for a laptop. On the cloud any trace of it fails the build,
 # before anything else, so a stray workflow variable can never skip a step.
 if [[ "${CI_XCODE_CLOUD:-}" == "TRUE" ]]; then
-  for v in CI_SCRIPTS_ROOT CI_SCRIPTS_FAKE CI_SCRIPTS_NODE_CMD CI_SCRIPTS_INSTALL_CMD CI_SCRIPTS_SYNC_CMD; do
+  for v in CI_SCRIPTS_ROOT CI_SCRIPTS_FAKE CI_SCRIPTS_NODE_DIST CI_SCRIPTS_INSTALL_CMD CI_SCRIPTS_SYNC_CMD; do
     [[ -z "${!v:-}" ]] || die "${v} is set on Xcode Cloud; the test seam is refused here. Remove it from the workflow."
   done
 fi
@@ -103,16 +106,14 @@ if [[ "${MODE}" == "release" ]]; then
   step "Numbers"
   [[ -n "${CI_BUILD_NUMBER:-}" ]] || die "CI_BUILD_NUMBER is not set"
   mv_line="$(pbx_values MARKETING_VERSION)"; cpv_line="$(pbx_values CURRENT_PROJECT_VERSION)"
-  read -r cl_version cl_build < <(node -e '
-    const lines = require("fs").readFileSync(process.argv[1], "utf8").split("\n");
-    let newest = null, section = null, buildSection = null, build = null;
-    for (const l of lines) {
-      const h = /^## \[(.+?)\]/.exec(l);
-      if (h) { section = h[1]; if (!newest && h[1] !== "Unreleased") newest = h[1]; continue; }
-      const b = /^- build ([0-9]+):/.exec(l);
-      if (b && build === null) { build = b[1]; buildSection = section; }
-    }
-    process.stdout.write(`${newest ?? "-"} ${build === null ? "-" : (buildSection === newest ? build : "misplaced:" + build)}`);' "${CHANGELOG}") || true
+  # No Node yet on the cloud at this point, so awk. Same grammar as
+  # scripts/release-preflight.sh check 4: first "## [x]" skipping
+  # [Unreleased] is the newest section; the first "- build N:" line in the
+  # file is the current build and must sit under that section.
+  read -r cl_version cl_build < <(awk '
+    /^## \[/ { s = $0; sub(/^## \[/, "", s); sub(/\].*$/, "", s); section = s; if (newest == "" && s != "Unreleased") newest = s; next }
+    /^- build [0-9]+:/ && build == "" { b = $3; sub(/:$/, "", b); build = b; bsection = section }
+    END { printf "%s %s\n", (newest == "" ? "-" : newest), (build == "" ? "-" : (bsection == newest ? build : "misplaced:" build)) }' "${CHANGELOG}") || true
   all_builds="$({ grep -E '^- build [0-9]+:' "${CHANGELOG}" || true; } | sed -E 's/^- build ([0-9]+):.*/\1/')"
   same_n="$(echo "${all_builds}" | { grep -cx "${TAG_BUILD}" || true; })"
   max_other="$(echo "${all_builds}" | { grep -vx "${TAG_BUILD}" || true; } | sort -n | tail -1)"
@@ -150,27 +151,34 @@ echo "ok: ${GOOGLE_PLIST} written, $(wc -c < "${GOOGLE_PLIST}" | tr -d ' ') byte
 # and a checksummed tarball is the same on every machine.
 
 step "Node ${NODE_VERSION}"
+[[ -f client/.nvmrc ]] || die "client/.nvmrc not found"
 want_major="$(tr -d '[:space:]' < client/.nvmrc)"
 [[ "${NODE_VERSION%%.*}" == "${want_major}" ]] || die "NODE_VERSION ${NODE_VERSION} in this script does not match client/.nvmrc (${want_major}); change one to match the other"
+arch="$(uname -m)"; case "${arch}" in x86_64) narch=x64 ;; arm64) narch=arm64 ;; *) die "unexpected architecture ${arch}" ;; esac
+tarball="node-v${NODE_VERSION}-darwin-${narch}.tar.gz"
+dist="${NODE_DIST}/v${NODE_VERSION}"
+installed=""
 if [[ -n "${FAKE}" ]]; then
-  if [[ -n "${CI_SCRIPTS_NODE_CMD:-}" ]]; then ( eval "${CI_SCRIPTS_NODE_CMD}" ) || die "node hook failed"; else echo "node install skipped (seam)"; fi
-else
-  arch="$(uname -m)"; case "${arch}" in x86_64) narch=x64 ;; arm64) narch=arm64 ;; *) die "unexpected architecture ${arch}" ;; esac
-  tarball="node-v${NODE_VERSION}-darwin-${narch}.tar.gz"
+  if [[ -n "${CI_SCRIPTS_NODE_DIST:-}" ]]; then dist="${CI_SCRIPTS_NODE_DIST}"; installed=1; else echo "node install skipped (seam); using the node already on PATH"; fi
+else installed=1; fi
+echo "node dist: ${dist}/${tarball}"
+if [[ -n "${installed}" ]]; then
   work="${CI_WORKSPACE_PATH:-${TMPDIR:-/tmp}}/node"
-  mkdir -p "${work}" && cd "${work}"
-  curl -fsSL --max-time 300 -o "${tarball}" "${NODE_DIST}/v${NODE_VERSION}/${tarball}" || die "download of ${tarball} failed"
-  curl -fsSL --max-time 60 -o SHASUMS256.txt "${NODE_DIST}/v${NODE_VERSION}/SHASUMS256.txt" || die "download of SHASUMS256.txt failed"
+  mkdir -p "${work}" || die "cannot create ${work}"
+  cd "${work}" || die "cannot enter ${work}"
+  curl -fsSL --retry 3 --retry-connrefused --max-time 300 -o "${tarball}" "${dist}/${tarball}" || die "download of ${tarball} failed"
+  curl -fsSL --retry 3 --retry-connrefused --max-time 60 -o SHASUMS256.txt "${dist}/SHASUMS256.txt" || die "download of SHASUMS256.txt failed"
   grep " ${tarball}\$" SHASUMS256.txt | shasum -a 256 -c - || die "checksum mismatch for ${tarball}"
-  tar -xzf "${tarball}"
+  tar -xzf "${tarball}" || die "could not unpack ${tarball}"
   export PATH="${work}/node-v${NODE_VERSION}-darwin-${narch}/bin:${PATH}"
   cd "${ROOT}"
 fi
 have="$(node -v 2>/dev/null || true)"
-if [[ -z "${FAKE}" || -n "${CI_SCRIPTS_NODE_CMD:-}" ]]; then
+if [[ -n "${installed}" ]]; then
+  command -v node >/dev/null 2>&1 || die "node is not on PATH after the install step"
   [[ "${have}" == "v${NODE_VERSION}" ]] || die "node -v is '${have}', expected v${NODE_VERSION}"
 fi
-echo "uname -m: $(uname -m)   node: ${have}   npm: $(npm -v 2>/dev/null || echo unavailable)"
+echo "uname -m: ${arch}   node: ${have}   npm: $(npm -v 2>/dev/null || echo unavailable)"
 
 # --- Step 4: client/.env.local from the six variables ------------------------
 
@@ -188,6 +196,7 @@ echo "ok: client/.env.local written, $(wc -l < client/.env.local | tr -d ' ') li
 
 step "npm ci and sync"
 before="$(git status --porcelain)"
+if [[ -n "${before}" ]]; then echo "${before}"; die "tracked files are already modified before the install (above); a clean clone must not be"; fi
 if [[ -n "${FAKE}" ]]; then
   if [[ -n "${CI_SCRIPTS_INSTALL_CMD:-}" ]]; then ( cd client && eval "${CI_SCRIPTS_INSTALL_CMD}" ) || die "npm ci (hook) failed"; else echo "npm ci skipped (seam)"; fi
   if [[ -n "${CI_SCRIPTS_SYNC_CMD:-}" ]]; then ( cd client && eval "${CI_SCRIPTS_SYNC_CMD}" ) || die "sync (hook) failed"; else echo "sync skipped (seam)"; fi
@@ -202,7 +211,7 @@ fi
 # would be resolved against a lock file for a different graph.
 
 step "Clean tree"
-changed="$(comm -13 <(echo "${before}" | sort) <(git status --porcelain | sort))"
+changed="$(git status --porcelain)"
 if [[ -n "${changed}" ]]; then
   echo "${changed}"; git --no-pager diff; die "the sync modified tracked files (above); the generator's output differs from what is committed"
 fi
