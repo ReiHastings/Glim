@@ -42,8 +42,9 @@ and 9 and `-a` exist to catch.
    `## [X.Y.Z] - YYYY-MM-DD` and start a fresh `[Unreleased]` above it; in
    Xcode, Targets > App > General > Identity, set **Version**.
 2. Always: set **Build** to the next integer (never reuse one, even after a
-   failed upload), and add `- build N: <what it is>` directly under the version
-   heading. Write the previous build's outcome (smoke test, review result,
+   failed upload), and add `- build N: <what it is>` as the **first** build
+   line under the version heading (newest first; preflight reads the first
+   build line in the file as the current build). Write the previous build's outcome (smoke test, review result,
    expired) on its own line now.
 3. If `site/` changed since the last tag: `scripts/deploy-site.sh` before this
    PR is merged, so the live policy never lags the manifest. This publishes

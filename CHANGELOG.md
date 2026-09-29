@@ -7,7 +7,8 @@ All notable changes to Glim, the iOS app. Format follows
 Machine-read by `scripts/release-preflight.sh`, so two lines have a fixed
 shape: a version heading is `## [X.Y.Z] - YYYY-MM-DD` (newest first, and
 `[Unreleased]` above them all), and each upload is a bullet `- build N: ...`
-directly under its version. The build number never resets, across versions
+under its version, newest build first, so the first build line in the file
+is always the current build. The build number never resets, across versions
 and across the move to Xcode Cloud. A build's outcome (smoke test, review,
 expiry) is written on its line when the next build is prepared. Tags are
 `vX.Y.Z-bN`, one per upload.
@@ -34,6 +35,6 @@ sign-in, offline-first storage with Firestore sync.
 - The Facebook SDK is no longer linked (a plugin default pulled it in; nothing
   used it).
 
-- build 1: first TestFlight upload, internal group. Processed clean; no export-compliance question, no manifest notice. Smoke test passed 2026-09-24.
-- build 2: same archive as build 1, uploaded twice; Xcode renumbered it. Identical contents.
 - build 3: the Stage 2 acceptance run, released strictly from RELEASING.md.
+- build 2: same archive as build 1, uploaded twice; Xcode renumbered it. Identical contents.
+- build 1: first TestFlight upload, internal group. Processed clean; no export-compliance question, no manifest notice. Smoke test passed 2026-09-24.
