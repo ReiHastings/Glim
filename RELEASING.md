@@ -22,9 +22,11 @@ example, is in `docs/glim_environment.Rmd` Section 2.
 - **Xcode does not run Vite.** The archive contains whatever
   `client/ios/App/App/public/` holds on disk, however old. Preflight `-v`
   rebuilds it from `HEAD` and fingerprints it; nothing may sync afterwards.
-- **The archive is made later than the check.** `-v` inspects the tree; Xcode
-  reads the tree again minutes later. `-a` fingerprints the bundle inside the
-  archive and compares it with `-v`'s receipt, closing that gap.
+- **The archive is made later than the check.** On the cloud this gap does
+  not exist: Apple clones the tagged commit and `ci_post_clone.sh` builds the
+  bundle from it, with the same checks `-v` makes. On the manual fallback,
+  `-a` fingerprints the bundle inside the archive and compares it with
+  `-v`'s receipt.
 - **Friends run old builds for weeks.** Rules go live before the client that
   needs them, and a tightening waits until the old client is gone.
 - **A new version means a Beta App Review; a new build of the same version
@@ -33,16 +35,21 @@ example, is in `docs/glim_environment.Rmd` Section 2.
 
 The dev app (`ios-dev.sh`, amber icon, `glim-dev`) is where a feature is
 tried before it is merged. It never goes through TestFlight, and its only
-part in this file is the residue it can leave in the tree, which checks 7
-and 9 and `-a` exist to catch.
+part in this file is the residue it can leave in the tree, which preflight
+checks 7 and 9 catch on this Mac and which a clean clone never has.
 
 ## 1. Decide what ships
 
+0. Read **Next Build Number** in App Store Connect (Xcode Cloud > Settings >
+   Build Number). That is N for this release. Xcode Cloud numbers its builds
+   from that counter; the project file and the changelog must say the same
+   number, and the cloud refuses the build if they do not. A failed cloud
+   build consumes a counter value, so read it again before every retry.
 1. If this is a new version: in `CHANGELOG.md`, turn `[Unreleased]` into
    `## [X.Y.Z] - YYYY-MM-DD` and start a fresh `[Unreleased]` above it; in
    Xcode, Targets > App > General > Identity, set **Version**.
-2. Always: set **Build** to the next integer (never reuse one, even after a
-   failed upload), and add `- build N: <what it is>` as the **first** build
+2. Always: set **Build** to N (never reuse a number, even after a failed
+   upload), and add `- build N: <what it is>` as the **first** build
    line under the version heading (newest first; preflight reads the first
    build line in the file as the current build). Write the previous build's outcome (smoke test, review result,
    expired) on its own line now.
@@ -75,11 +82,13 @@ together (`docs/glim_environment.Rmd` Section 5, step 4):
 scripts/release-preflight.sh -v X.Y.Z
 ```
 
-Must print `PASS`. It rebuilds the web bundle from `HEAD` itself, so do not
-run `ios-dev.sh` or any sync between this step and the archive. Every `FAIL`
-line names its fix. `-n` runs the same checks without failing, for a look.
+Must print `PASS`. It rebuilds the web bundle from `HEAD` itself, which is
+worth the ninety seconds even though the cloud rebuilds from scratch: a
+`.env.local` or `ios-dev.sh` problem on this Mac shows up here, before a
+counter value is spent. Every `FAIL` line names its fix. `-n` runs the same
+checks without failing, for a look.
 
-## 4. Tag
+## 4. Tag, which starts the build
 
 ```
 git tag -a vX.Y.Z-bN -m "Glim X.Y.Z build N"
@@ -87,51 +96,68 @@ git push origin vX.Y.Z-bN
 scripts/release-preflight.sh -v X.Y.Z      # again; it now verifies the tag
 ```
 
-## 5. Archive, inspect, upload (Xcode)
+The push is the trigger. Xcode Cloud's "Release" workflow starts within a
+minute or two on any tag beginning with `v`; nothing else starts it, and a
+merge to `main` never does. Progress: Xcode's Report navigator > Cloud tab,
+or App Store Connect > Xcode Cloud > Builds.
 
-1. If any Swift package changed since the last archive (a plugin update, a
-   trait change): **File > Packages > Reset Package Caches**, wait for the
-   resolution bar to finish, then **Product > Clean Build Folder**. Clean
-   Build Folder alone does not touch package state; on 2026-09-23 an archive
-   made after a clean still embedded an SDK the project no longer linked.
-   If the GUI then refuses to build ("Missing package product"), the
-   terminal is equivalent and has been reliable:
+## 5. Wait
+
+About three minutes. On Apple's machine, `ci_post_clone.sh` installs Node,
+writes the production plist and `.env.local` from the workflow's variables,
+runs `npm ci` and the sync, and refuses the build if the tag, the project
+file, the changelog and the counter disagree, if the sync changed a tracked
+file, or if the bundle names the dev project. Xcode archives. Then
+`ci_post_xcodebuild.sh` runs the archive checks (version and build, bundle
+id, export key, web bundle, Google plist, privacy manifest, embedded
+frameworks) and writes What to Test from the changelog.
+
+- **Green:** the build appears in TestFlight under the Reina group with its
+  What to Test text. Continue at Section 6.
+- **Red:** open the build, Logs, and read the first `ERROR:` or `FAIL` line;
+  the scripts say what to fix. The counter value is spent and the cloud
+  refuses manual rebuilds, so a retry, even for an Apple-side flake, is a
+  full cycle: read the counter again (Section 1 step 0), bump the project
+  and changelog, commit, PR, CI, preflight, new tag. Budget twenty minutes
+  plus CI. Never move a tag.
+
+## 5b. Manual fallback, for the day Xcode Cloud is down
+
+The pre-cloud path still works and `-a` still exists for it:
+
+1. If any Swift package changed since the last archive: File > Packages >
+   Reset Package Caches, wait, then Product > Clean Build Folder (a clean
+   alone does not touch package state). If the GUI will not build, the
+   terminal is equivalent:
    ```
    cd client/ios/App && xcodebuild archive -project App.xcodeproj -scheme App \
      -configuration Release -destination 'generic/platform=iOS' \
      -archivePath ~/Library/Developer/Xcode/Archives/$(date +%F)/Glim-X.Y.Z-bN.xcarchive \
      -derivedDataPath ~/Library/Developer/Xcode/DerivedData/glim-archive -allowProvisioningUpdates
    ```
-   The Organizer lists the result (as "App X.Y.Z (N)") and uploads it like
-   any other archive.
-2. Destination **Any iOS Device (arm64)**, then **Product > Archive**. The
-   Organizer opens with the new archive selected.
-3. Get the archive's path. Archive names contain an invisible narrow space
-   before "PM", so a pasted path does not resolve; drag the archive from
-   Finder into the terminal instead, or use the newest one:
-   ```
+2. Destination Any iOS Device (arm64), Product > Archive.
+3. ```
    scripts/release-preflight.sh -a "$(ls -td ~/Library/Developer/Xcode/Archives/*/*.xcarchive | head -1)"
    ```
-   Must print `PASS`. This is the only step that ties the archive you are
-   about to upload to the tree preflight blessed (same web bundle byte for
-   byte, same version and build, production credentials, the privacy manifest
-   and export key present, and only the expected frameworks embedded).
-4. **Distribute App** > TestFlight & App Store (Xcode's wording varies) >
-   Upload, with automatic signing. **Untick "Manage Version and Build
-   Number"** in that dialog: ticked, Xcode silently renumbers a build that
-   Apple has already seen, which is how build 2 came to exist on
-   2026-09-23 as a second upload of build 1. Upload each archive once. Xcode uploads the dSYMs with it, which is
-   what makes tester crash reports readable.
-5. Wait for App Store Connect's processing email (10 to 30 minutes).
-6. **If the upload or processing fails:** the build number and tag are spent.
-   Fix the cause, note the failure on the build's changelog line, and go back
-   to Section 1 with build N+1. Never move the tag.
+   must print `PASS` (archive names contain an invisible narrow space, so a
+   pasted path does not resolve; this picks the newest).
+4. Organizer > Distribute App > **App Store Connect** (not "TestFlight
+   Internal Only", which can never reach the external group) > Upload. Untick
+   "Manage Version and Build Number" if the dialog offers it, and upload each
+   archive once.
+5. This Mac's Xcode is not the cloud's Xcode, so the binary differs in
+   toolchain; the framework allowlist in `-a` is the check that covers both.
+6. **Afterwards, set Next Build Number in App Store Connect to at least N+1**
+   and note it on the changelog line. The cloud counter does not know about a
+   manual upload; without this, the next cloud build reuses a number and App
+   Store Connect rejects it.
 
 ## 6. Internal group
 
 1. In App Store Connect > TestFlight, the build appears under the internal
-   group ("Reina", automatic distribution on). Install it from the TestFlight
-   app on the phone.
+   group "Reina" (the Release workflow's post-action puts it there; for a
+   manual upload, the group's automatic distribution does). Install it from
+   the TestFlight app on the phone.
 2. Smoke test against production: sign in with Google; existing data is
    visible; one write of each kind (water, a food, a journal entry, a symptom)
    survives a force-quit and reopen; the Health step import runs.
@@ -204,8 +230,13 @@ separately. `npm test -- --only release_preflight` on Linux therefore selects
 nothing and exits non-zero, which is the runner's normal "nothing selected"
 rule, not a failure of the test.
 
-## Not yet automated
+## What the cloud does not do
 
-Xcode Cloud (Stage 2b) will take over Sections 3 to 5 for tag pushes. Until
-then, every step above is by hand, and the archive check in Section 5 is what
-stands in for a build-phase guard.
+Reading the counter, assigning a build to the external group and rewriting
+its What to Test if the generated text is not right, the Beta App Review
+submission, expiring bad builds, and raising the counter after a manual
+upload are all by hand. The workflow's seven environment variables (the six
+`VITE_FIREBASE_*` values and the production Google plist as base64) are
+entered in App Store Connect, not in the repo; when the repo goes private,
+committing the plist and dropping that variable is a one-line change in
+`ci_post_clone.sh`.
