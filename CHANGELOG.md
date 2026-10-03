@@ -35,6 +35,7 @@ sign-in, offline-first storage with Firestore sync.
 - The Facebook SDK is no longer linked (a plugin default pulled it in; nothing
   used it).
 
-- build 3: the Stage 2 acceptance run, released strictly from RELEASING.md.
+- build 4: the first Xcode Cloud release, from the v1.0.0-b4 tag.
+- build 3: the Stage 2 acceptance run, released strictly from RELEASING.md. Smoke test passed 2026-09-30.
 - build 2: same archive as build 1, uploaded twice; Xcode renumbered it. Identical contents.
 - build 1: first TestFlight upload, internal group. Processed clean; no export-compliance question, no manifest notice. Smoke test passed 2026-09-24.
